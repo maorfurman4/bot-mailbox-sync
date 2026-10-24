@@ -106,6 +106,8 @@ def decide(address: str, subject: str, ai_category: str) -> str:
         category = "keep"
     if category in ("keep", "security") and _matches(address, rules.IMPORTANT):
         category = "important"
+    if category == "important" and _matches(address, rules.NO_ALERT):
+        category = "keep"
     return category
 
 def should_rescue(address: str, subject: str) -> bool:

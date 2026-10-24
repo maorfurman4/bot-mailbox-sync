@@ -31,7 +31,10 @@ PROTECT_SUBJECT = (
 )
 
 # 📬 תמיד מקבלים התראה בטלגרם
-IMPORTANT = ["gov.il", "maccabi4u.org.il", "che.org.il", "afeka.ac.il"]
+IMPORTANT = ["gov.il", "maccabi4u.org.il", "che.org.il"]
+
+# 🔕 אף פעם לא שולחים עליהם התראה (אבל הם עדיין מוגנים ולא נמחקים)
+NO_ALERT = ["afeka.ac.il"]
 
 # 💳 קישור תשלום מוצג רק אם הוא באתר של השולח עצמו או של סולק מוכר
 PAYMENT_PROCESSORS = ["tranzila.com", "cardcom.solutions", "meshulam.co.il", "payplus.co.il",

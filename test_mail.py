@@ -35,6 +35,8 @@ assert m.decide("no-reply@mail.instagram.com", "see more in your feed", "keep") 
 assert m.decide("info@max-finance.co.il", "הבחירה עליכם – הקאשבק עלינו. פרסומת", "junk") == "junk"  # מוגן, אבל פרסומת
 assert m.decide("noreply@openai.com", "Your API credit balance has $3.00 remaining", "junk") == "keep"
 assert m.decide("inbal_shahar@mod.gov.il", "אגף השיקום", "keep") == "important"
+assert m.decide("sms@afeka.ac.il", "הודעה לגבי עדכון ציון", "important") == "keep"  # אפקה: מוגן, בלי התראה
+assert m.decide("sms@afeka.ac.il", "x", "junk") == "keep"
 assert m.decide("news@shop.com", "מבצע", "junk") == "junk"
 assert m.decide("noreply@meiavivim.co.il", "חשבון מים תקופתי", "bill") == "bill"
 assert m.decide("store@carrefour.co.il", "שובר מתנה", "coupon") == "coupon"
