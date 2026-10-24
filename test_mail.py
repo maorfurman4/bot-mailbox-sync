@@ -85,6 +85,15 @@ assert m.placement("orders") == ("✈️ הזמנות ונסיעות", False)
 assert m.placement("coupon") == ("🎟️ קופונים", False)
 assert m.placement("other") == ("📁 כללי", False)
 
+# ⌛ פג תוקף אחרי יום → לפח: קודים חד-פעמיים ו-💻 פיתוח; התראת אבטחה אמיתית נשארת
+assert m.is_expired("security", "Your Vercel security code: 448014")
+assert m.is_expired("security", "כניסה חד פעמית לאתר בהצדעה")
+assert not m.is_expired("security", "Security alert")
+assert not m.is_expired("security", "Your AliExpress Account Password Has Been Changed")
+assert m.is_expired("dev", "[maorfurman4/bot-task-calendar] Run failed: Deploy Yossi to Vercel")
+assert m.is_expired("dev", "Preview deployment failed for amiret-prep")
+assert not m.is_expired("important", "קוד גישה לבניין")  # רק בתוויות שהוגדרו
+
 # קריאת AI אחת לכמה מיילים — תשובה חלקית או שגויה לא מפילה כלום
 assert m.parse_batch({"results": [{"i": 0, "category": "dev"}, {"i": 2, "category": "junk"}, {"i": 9, "category": "x"}]}, 3) == {
     0: "dev", 2: "junk"}

@@ -15,7 +15,7 @@ BLOCK = [
 
 # 🔐 התראות אבטחה עוברות גם שולח חסום (למשל security@mail.instagram.com)
 SECURITY_SUBJECT = r"security|sign.?in|password|verif|login|new device|אבטח|סיסמ|אימות|התחברות|מכשיר חדש"
-# קודים חד-פעמיים — יוצאים מהתיבה אחרי יום (התווית נשארת)
+# קודים חד-פעמיים — לפח אחרי יום
 CODE_SUBJECT = r"code|קוד|כניסה חד פעמית"
 
 # 🛡️ לא נמחקים לעולם, גם אם ה-AI חושב שזה זבל

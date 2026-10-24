@@ -122,6 +122,10 @@ def decide(address: str, subject: str, category: str) -> str:
         category = "important"
     return category
 
+def is_expired(category: str, subject: str) -> bool:
+    """אחרי יום כבר אין בהם ערך: קודים חד-פעמיים, והתראות פיתוח (GitHub/Vercel)."""
+    return category == "dev" or (category == "security" and bool(re.search(rules.CODE_SUBJECT, subject or "", re.I)))
+
 def placement(category: str, paid: bool = False) -> tuple:
     name, in_inbox, _ = PLACES[category]
     return name, in_inbox and not (category == "bill" and paid)
@@ -285,10 +289,11 @@ junk = פרסומת, מבצע, ניוזלטר, רשת חברתית, לא קשו�
 
 החזר JSON בלבד: {{"results": [{{"i": 0, "category": "..."}}]}}"""
 
-def fetch(gmail, query: str, limit: int) -> list:
+def fetch(gmail, query: str, limit: int, label_ids: list | None = None) -> list:
     msgs, token = [], None
     while len(msgs) < limit:
-        res = gmail.users().messages().list(userId="me", q=query, maxResults=min(100, limit), pageToken=token).execute()
+        res = gmail.users().messages().list(userId="me", q=query, maxResults=min(100, limit), pageToken=token,
+                                            labelIds=label_ids or None).execute()
         msgs += res.get("messages", [])
         token = res.get("nextPageToken")
         if not token:
@@ -336,7 +341,7 @@ def classify(mails: list) -> dict:
     return result
 
 def organize(gmail, calendar):
-    stats = {k: 0 for k in ("junk", "unsubscribed", "codes_archived", *PLACES)}
+    stats = {k: 0 for k in ("junk", "unsubscribed", "expired", *PLACES)}
     unsubscribed = set()
     done_id = label_id(gmail, DONE_LABEL)
 
@@ -373,14 +378,17 @@ def organize(gmail, calendar):
         except Exception as ex:
             fail(f"{action}: {mail['subject'][:40]}", ex)
 
-    # 3) קודים חד-פעמיים — יוצאים מהתיבה אחרי יום
-    security = PLACES["security"][0]
-    for msg in fetch(gmail, f'in:inbox label:"{security}" older_than:1d', 100):
-        mail = metadata(gmail, msg["id"])
-        if re.search(rules.CODE_SUBJECT, mail["subject"], re.I):
-            act(f"archive old code: {mail['subject'][:50]}", gmail.users().messages().modify(
-                userId="me", id=mail["id"], body={"removeLabelIds": ["INBOX"]}).execute)
-            stats["codes_archived"] += 1
+    # 3) פג תוקף אחרי יום → לפח (קודים חד-פעמיים, התראות פיתוח). לפי מזהה התווית — חיפוש לפי שם עם אימוג'י לא אמין
+    for category in ("security", "dev"):
+        lid = label_id(gmail, PLACES[category][0])
+        if lid.startswith("<"):
+            continue  # DRY_RUN לפני שהתווית נוצרה
+        for msg in fetch(gmail, "older_than:1d -in:trash", 500, [lid]):
+            mail = metadata(gmail, msg["id"])
+            if is_expired(category, mail["subject"]):
+                act(f"expired → trash: {mail['subject'][:50]}",
+                    gmail.users().messages().trash(userId="me", id=mail["id"]).execute)
+                stats["expired"] += 1
     return stats
 
 # =============================================================================
