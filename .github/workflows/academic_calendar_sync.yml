@@ -12,7 +12,11 @@ on:
         type: boolean
         default: false
       organize_all:
-        description: "לסדר בתוויות גם את כל המיילים הישנים בתיבה (בלי טלגרם ויומן)"
+        description: "לסדר בתוויות גם את כל התיבה ו-60 יום אחורה (בלי טלגרם ויומן)"
+        type: boolean
+        default: false
+      merge_labels:
+        description: "להעביר את התוויות הישנות לתוויות החדשות ולמחוק אותן (חד-פעמי)"
         type: boolean
         default: false
 
@@ -38,6 +42,7 @@ jobs:
         env:
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           ORGANIZE_ALL: ${{ inputs.organize_all && '1' || '' }}
+          MERGE_LABELS: ${{ inputs.merge_labels && '1' || '' }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}

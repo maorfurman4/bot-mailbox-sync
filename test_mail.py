@@ -122,9 +122,23 @@ assert m.parse_batch({"results": [{"i": 0, "category": "dev"}, {"i": 2, "categor
     0: "dev", 2: "junk"}
 assert m.parse_batch({}, 2) == {}
 
-# שחזור מהפח: מוגן, לא פרסומת
-assert m.should_rescue("noreply@openai.com", "Your OpenAI API credit balance has $3.00 remaining")
-assert not m.should_rescue("info@max-finance.co.il", "הבחירה עליכם – הקאשבק עלינו. פרסומת")
-assert not m.should_rescue("news@shop.com", "מבצע")
+# 🔀 מיזוג התוויות שלך: מה שה-AI חשב לזבל לא נמחק (רק פרסומת מסומנת או שולח חסום)
+assert m.merge_action("junk", "סיכום חודש מאי") == "other"
+assert m.merge_action("junk", "פרסומת | מבצע") == "junk"
+assert m.merge_action("block", "x") == "block" and m.merge_action("bill", "x") == "bill"
+assert m.MERGE_LABELS == ["חיובים[", "split", "הזמנות", "קופוננים קארפור", "רודוס", "הנדסת חשמל", "עוסק פטור", "חשוב", "קופונים"]
+
+# שולחים מוכרים שה-AI פספס
+assert m.known_category("hello@splitwise.com", "'ועד בית 3 חודשים' (₪750.00) added by Maxim a.", []) == "bill"
+assert m.known_category("hello@splitwise.com", "Amit Hooberman paid you ₪133.33", []) == "bill"
+assert m.known_category("info@payme.io", "רכישה 107059544 בוצעה בהצלחה", []) == "bill"
+assert m.known_category("donotreply@pango.co.il", "פרטי עסקת פנגו בחניון", []) == "bill"
+assert m.known_category("carmelton@printernet.co.il", "החשבונית החודשית שלך ממנהרות הכרמל", []) == "bill"
+
+# מיקום: מייל חדש שעקף את התיבה בפילטר ישן — חשבון פתוח חוזר לתיבה; במיזוג/סידור ישן לא נוגעים במיקום
+assert m.inbox_change(True, ["Label_x"], move=True) == ("INBOX", None)
+assert m.inbox_change(False, ["INBOX"], move=True) == (None, "INBOX")
+assert m.inbox_change(True, ["INBOX"], move=True) == (None, None)
+assert m.inbox_change(False, ["INBOX"], move=False) == (None, None)
 
 print("ok")

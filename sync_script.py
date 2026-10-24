@@ -38,9 +38,12 @@ DRY_RUN = os.environ.get("DRY_RUN", "").strip() == "1"
 ORGANIZE_ALL = os.environ.get("ORGANIZE_ALL", "").strip() == "1"
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 
-DONE_LABEL = "Mail_Bot_Done"          # כל מייל שהבוט טיפל בו
-OLD_LABELS = ["Processed_By_Bot"]     # טופלו ע"י הגרסה הקודמת — לא שולחים שוב לטלגרם
-OLD_CLEANER_LABEL = "Maintenance_Processed"  # המנקה הישן — ממנו משחזרים
+MERGE = os.environ.get("MERGE_LABELS", "").strip() == "1"
+
+DONE_LABEL = "Mail_Bot_Done"          # כל מייל שהבוט טיפל בו (מוסתרת מרשימת התוויות)
+# התוויות שלך — מתמזגות לתוויות החדשות ונמחקות (באישור מאור, 24/10/2026)
+MERGE_LABELS = ["חיובים[", "split", "הזמנות", "קופוננים קארפור", "רודוס", "הנדסת חשמל", "עוסק פטור", "חשוב", "קופונים"]
+OLD_BOT_LABELS = ["Processed_By_Bot", "Maintenance_Processed"]  # של הגרסה הקודמת — נמחקות
 
 # קטגוריה → (תווית, נשאר בתיבה?, צבע רקע). בתיבה נשאר רק מה שצריך טיפול.
 PLACES = {
@@ -154,8 +157,16 @@ def parse_batch(answer: dict, count: int) -> dict:
             out[r["i"]] = r["category"]
     return out
 
-def should_rescue(address: str, subject: str) -> bool:
-    return is_protected(address, subject) and decide(address, subject, "other") not in ("block", "junk")
+def merge_action(action: str, subject: str) -> str:
+    """במיזוג התוויות שלך: זבל לפי ה-AI לא נמחק — רק פרסומת מסומנת או שולח חסום."""
+    return "other" if action == "junk" and not is_ad(subject) else action
+
+def inbox_change(in_inbox: bool, labels: list, move: bool) -> tuple:
+    """(להוסיף, להסיר) — תיבה. move=False (מיזוג/סידור ישן): לא מזיזים כלום."""
+    if not move:
+        return None, None
+    has = "INBOX" in labels
+    return ("INBOX" if in_inbox and not has else None), ("INBOX" if has and not in_inbox else None)
 
 def _site(host: str) -> str:
     """הדומיין הרשום: pay.meiavivim.co.il → meiavivim.co.il, a.b.example.com → example.com."""
@@ -361,10 +372,54 @@ def classify(mails: list) -> dict:
           f"in {-(-len(unknown) // 25)} call(s)")
     return result
 
+def apply_labels(gmail, calendar, mails, stats, unsubscribed, *, move: bool, notify: bool, merging: bool = False):
+    """מיון → תווית. move: להזיז לתיבה/ממנה; notify: חשבון לטלגרם ויומן; merging: מיזוג התוויות הישנות."""
+    done_id = label_id(gmail, DONE_LABEL)
+    categories = classify(mails)
+    for mail in mails:
+        action = decide(mail["sender"], mail["subject"], categories[mail["id"]])
+        if merging:
+            action = merge_action(action, mail["subject"])
+        print(f"📨 {action:9} ← {categories[mail['id']]!s:9} | {mail['sender']} | {mail['subject'][:60]}")
+        try:
+            if action in ("junk", "block"):
+                junk(gmail, mail, unsubscribed, stats)
+                continue
+            paid = True
+            if action == "bill" and notify:
+                paid = handle_bill(gmail, calendar, mail)
+            name, in_inbox = placement(action, paid=paid, address=mail["sender"])
+            add, remove = inbox_change(in_inbox, mail["labels"], move)
+            body = {"addLabelIds": [label_id(gmail, name, PLACES[action][2]), done_id] + ([add] if add else [])}
+            if remove:
+                body["removeLabelIds"] = [remove]
+            act(f"{name}{' → inbox' if add else ' (archive)' if remove else ''}: {mail['subject'][:50]}",
+                gmail.users().messages().modify(userId="me", id=mail["id"], body=body).execute)
+            stats[action] += 1
+        except Exception as ex:
+            fail(f"{action}: {mail['subject'][:40]}", ex)
+
+def merge_old_labels(gmail, calendar, stats, unsubscribed):
+    """מעביר כל מה שבתוויות שלך לתוויות החדשות, ואז מוחק את התוויות הישנות (המיילים עצמם נשארים)."""
+    label_id(gmail, DONE_LABEL)  # טוען את רשימת התוויות
+    for name in MERGE_LABELS + OLD_BOT_LABELS:
+        lid = _LABELS.get(name)
+        if not lid:
+            continue
+        if name in MERGE_LABELS:
+            mails = [m for m in (metadata(gmail, msg["id"]) for msg in fetch(gmail, "-in:trash", 1000, [lid]))
+                     if label_id(gmail, DONE_LABEL) not in m["labels"]]
+            print(f"🔀 {name}: {len(mails)} emails to move")
+            apply_labels(gmail, calendar, mails, stats, unsubscribed, move=False, notify=False, merging=True)
+        act(f"delete label {name}", gmail.users().labels().delete(userId="me", id=lid).execute)
+    act(f"hide label {DONE_LABEL}", gmail.users().labels().patch(
+        userId="me", id=label_id(gmail, DONE_LABEL), body={"labelListVisibility": "labelHide"}).execute)
+
 def organize(gmail, calendar):
     stats = {k: 0 for k in ("junk", "unsubscribed", "expired", *PLACES)}  # כולל "waiting"
     unsubscribed = set()
-    done_id = label_id(gmail, DONE_LABEL)
+    if MERGE:
+        merge_old_labels(gmail, calendar, stats, unsubscribed)
 
     # 1) שולחים חסומים — כל מה שבתיבה, גם ישן
     for msg in fetch(gmail, "in:inbox from:(" + " OR ".join(rules.BLOCK) + ")", 500):
@@ -373,31 +428,13 @@ def organize(gmail, calendar):
         if decide(mail["sender"], mail["subject"], "junk") == "block":
             junk(gmail, mail, unsubscribed, stats)
 
-    # 2) מיילים חדשים (או כל התיבה ב-ORGANIZE_ALL) → קטגוריה → תווית ומקום
-    skip = " ".join(f"-label:{name}" for name in [DONE_LABEL, *OLD_LABELS])
-    query = f"in:inbox {skip}" if ORGANIZE_ALL else f"in:inbox newer_than:3d {skip}"
+    # 2) מיילים חדשים בכל ה-Gmail — גם מה שפילטרים ישנים העבירו ישר לתוויות ועקף את התיבה.
+    #    ORGANIZE_ALL: כל התיבה + 60 יום אחורה, בלי להזיז מיקום ובלי טלגרם/יומן
+    base = f"-in:trash -in:spam -in:sent -label:{DONE_LABEL}"
+    query = f"(in:inbox OR newer_than:60d) {base}" if ORGANIZE_ALL else f"newer_than:3d {base}"
     mails = [m for m in (metadata(gmail, msg["id"]) for msg in fetch(gmail, query, 1000 if ORGANIZE_ALL else 100))
-             if decide(m["sender"], m["subject"], "other") != "block"]
-    categories = classify(mails)
-    for mail in mails:
-        action = decide(mail["sender"], mail["subject"], categories[mail["id"]])
-        print(f"📨 {action:9} ← {categories[mail['id']]!s:9} | {mail['sender']} | {mail['subject'][:60]}")
-        try:
-            if action == "junk":
-                junk(gmail, mail, unsubscribed, stats)
-                continue
-            paid = True
-            if action == "bill" and not ORGANIZE_ALL:  # מיילים ישנים — רק תווית, בלי טלגרם ויומן
-                paid = handle_bill(gmail, calendar, mail)
-            name, in_inbox = placement(action, paid=paid, address=mail["sender"])
-            body = {"addLabelIds": [label_id(gmail, name, PLACES[action][2]), done_id]}
-            if not in_inbox:
-                body["removeLabelIds"] = ["INBOX"]
-            act(f"{name}{'' if in_inbox else ' (archive)'}: {mail['subject'][:50]}",
-                gmail.users().messages().modify(userId="me", id=mail["id"], body=body).execute)
-            stats[action] += 1
-        except Exception as ex:
-            fail(f"{action}: {mail['subject'][:40]}", ex)
+             if "DRAFT" not in m["labels"]]
+    apply_labels(gmail, calendar, mails, stats, unsubscribed, move=not ORGANIZE_ALL, notify=not ORGANIZE_ALL)
 
     # 3) פג תוקף → לפח: אבטחה ופיתוח אחרי יום, דיוור מערכת של אפקה אחרי יומיים — אבל לא שיחה שענית בה.
     #    לפי מזהה התווית — חיפוש לפי שם עם אימוג'י לא אמין
@@ -471,29 +508,14 @@ def handle_bill(gmail, calendar, mail: dict) -> bool:
     return is_paid
 
 # =============================================================================
-# ─── שחזור — מה שהמנקה הישן העביר לפח בטעות ─────────────────────────────────
-# =============================================================================
-def rescue(gmail) -> int:
-    restored, old_id = 0, label_id(gmail, OLD_CLEANER_LABEL)
-    for msg in fetch(gmail, f"in:trash label:{OLD_CLEANER_LABEL}", 500):
-        mail = metadata(gmail, msg["id"])
-        if should_rescue(mail["sender"], mail["subject"]):
-            act(f"restore: {mail['subject'][:60]}", gmail.users().messages().untrash(userId="me", id=mail["id"]).execute)
-            # המעבר לפח מוריד את INBOX — מחזירים לתיבה, כלא נקרא, כדי שבאמת תראה אותו
-            act("back to inbox", gmail.users().messages().modify(
-                userId="me", id=mail["id"], body={"removeLabelIds": [old_id], "addLabelIds": ["INBOX", "UNREAD"]}).execute)
-            restored += 1
-    return restored
-
-# =============================================================================
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 # =============================================================================
 def main():
     gmail, calendar = get_google_services()
-    print(f"--- Mail manager{' (DRY RUN — no changes)' if DRY_RUN else ''}{' (ORGANIZE ALL)' if ORGANIZE_ALL else ''} ---")
-    restored = rescue(gmail)
+    modes = [m for m, on in (("DRY RUN — no changes", DRY_RUN), ("ORGANIZE ALL", ORGANIZE_ALL), ("MERGE LABELS", MERGE)) if on]
+    print(f"--- Mail manager {' | '.join(modes)} ---")
     stats = organize(gmail, calendar)
-    print(f"🏁 restored={restored} " + " ".join(f"{k}={v}" for k, v in stats.items()))
+    print("🏁 " + " ".join(f"{k}={v}" for k, v in stats.items()))
     if FAILURES:
         act("failures → telegram", telegram, TELEGRAM_TOKEN, CHAT_ID,
             "⚠️ <b>מנהל המייל — מה לא עבד:</b>\n" + "\n".join(FAILURES))
