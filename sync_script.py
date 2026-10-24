@@ -132,8 +132,11 @@ def is_expired(category: str, subject: str, address: str) -> bool:
     """אבטחה ופיתוח — כולם; לימודים — רק דיוור מערכת של אפקה (שיחה שענית בה נבדקת בנפרד)."""
     return category in ("security", "dev") or (category == "studies" and is_afeka_system(address))
 
-def is_person(address: str) -> bool:
-    return not re.search(rules.NOT_PERSON, address.split("@")[0], re.I)
+def is_person(address: str, subject: str) -> bool:
+    local, _, domain = address.partition("@")
+    if re.search(rules.NOT_PERSON, local, re.I) or re.search(rules.AUTO_REPLY_SUBJECT, subject or "", re.I):
+        return False
+    return domain in rules.PERSONAL_DOMAINS or bool(re.search(r"[._]", local))
 
 def i_replied(thread_labels: list) -> bool:
     return any("SENT" in labels for labels in thread_labels)
@@ -415,7 +418,7 @@ def organize(gmail, calendar):
     if not important_id.startswith("<"):
         for msg in fetch(gmail, f"in:inbox older_than:{WAITING_AFTER_DAYS}d", 200, [important_id]):
             mail = metadata(gmail, msg["id"])
-            waiting = is_person(mail["sender"]) and not replied(gmail, mail)
+            waiting = is_person(mail["sender"], mail["subject"]) and not replied(gmail, mail)
             if waiting != (waiting_id in mail["labels"]):  # להוסיף, או להוריד אחרי שענית
                 act(f"{'⏳ waiting' if waiting else '✔️ replied'}: {mail['subject'][:50]}",
                     gmail.users().messages().modify(userId="me", id=mail["id"], body={

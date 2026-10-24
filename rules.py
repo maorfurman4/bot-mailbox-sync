@@ -21,8 +21,10 @@ AFEKA_SYSTEM = ["sms", "afekais.do.not.reply", "targilim", "helpdesk"]
 # 🧾 שולח קבלות מוכר נחשב "חשבון" רק אם הנושא באמת נראה כמו קבלה; אחרת ה-AI מחליט (Wolt שולחים גם פרסומות)
 RECEIPT_SUBJECT = r"קבל|חשבונ|חשבון|תשלום|חיוב|רכישה|עסקה|הזמנ|receipt|invoice|payment|refund|order|statement"
 
-# ⏳ שולח שהוא מערכת ולא אדם — לא מחכה לתשובה ממך
+# ⏳ "אדם": כתובת של ספק מייל פרטי, או כתובת אישית בסגנון first.last / first_last — ולא מערכת או תשובה אוטומטית
+PERSONAL_DOMAINS = ["gmail.com", "walla.co.il", "walla.com", "hotmail.com", "outlook.com", "yahoo.com", "icloud.com"]
 NOT_PERSON = r"reply|notif|news|service|support|system|mailer|alert|security|billing|invoice|marketing|bounce"
+AUTO_REPLY_SUBJECT = r"מענה אוטומטי|auto.?reply|automatic reply|out of office"
 
 # 🛡️ לא נמחקים לעולם, גם אם ה-AI חושב שזה זבל
 PROTECT = [

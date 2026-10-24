@@ -111,8 +111,11 @@ assert m.placement("studies", address="ramie@afeka.ac.il") == ("🎓 לימוד�
 assert m.i_replied([["INBOX"], ["SENT"]]) and not m.i_replied([["INBOX"], ["INBOX", "UNREAD"]])
 
 # ⏳ ממתין לתשובה — רק אדם אמיתי, לא מערכת
-assert m.is_person("gash69@gmail.com") and m.is_person("inbal_shahar@mod.gov.il")
-assert not m.is_person("do_not_reply@maccabi4u.org.il") and not m.is_person("noreply@electiontraining.co.il")
+assert m.is_person("gash69@gmail.com", "Re:") and m.is_person("inbal_shahar@mod.gov.il", "בוצר לידור")
+assert not m.is_person("do_not_reply@maccabi4u.org.il", "x") and not m.is_person("noreply@electiontraining.co.il", "x")
+assert not m.is_person("harelinsurance@harel-group.co.il", "הדוח התקופתי שלך בפנסיה")  # שולח עסקי
+assert not m.is_person("info@payme.io", "רכישה בוצעה בהצלחה")
+assert not m.is_person("inbal_shahar@mod.gov.il", "מענה אוטומטי: אגף השיקום")  # תשובה אוטומטית
 
 # קריאת AI אחת לכמה מיילים — תשובה חלקית או שגויה לא מפילה כלום
 assert m.parse_batch({"results": [{"i": 0, "category": "dev"}, {"i": 2, "category": "junk"}, {"i": 9, "category": "x"}]}, 3) == {
