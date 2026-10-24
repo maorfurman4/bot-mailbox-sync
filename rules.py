@@ -22,6 +22,9 @@ PROTECT = [
     "github.com", "vercel.com", "openai.com", "anthropic.com", "google.com",
     "gmail.com",                 # אנשים פרטיים
 ]
+# 🔐 התראות אבטחה עוברות גם שולח חסום (למשל security@mail.instagram.com)
+SECURITY_SUBJECT = r"security|sign.?in|password|verif|login|new device|אבטח|סיסמ|אימות|התחברות"
+
 PROTECT_SUBJECT = (
     r"security|sign.?in|password|verif|login|new device|"
     r"אבטח|סיסמ|אימות|התחברות|כניסה|חשבונית|קבלה|חשבון|תשלום|invoice|receipt"

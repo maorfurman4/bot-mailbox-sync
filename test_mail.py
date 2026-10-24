@@ -23,8 +23,14 @@ assert m.is_protected("account@notice.aliexpress.com", "Your AliExpress Account 
 assert m.is_protected("x@shop.com", "חשבונית עבור הזמנתך")
 assert not m.is_protected("news@shop.com", "מבצע סוף עונה")
 
-# ההחלטה הסופית: חסימה > הגנה > AI
-assert m.decide("messages-noreply@linkedin.com", "Security alert", "keep") == "block"
+# פרסומת לפי חוק: "פרסומת" בתחילת או בסוף הנושא (חשבונית ש"מכילה דבר פרסומת" באמצע — לא)
+assert m.is_ad("פרסומת | אזור מכירת חיסול") and m.is_ad("הבחירה עליכם – הקאשבק עלינו. פרסומת")
+assert not m.is_ad("חשבונית מחברת אמישראגז - מכיל דבר פרסומת 26641800 מספר צרכן")
+
+# ההחלטה הסופית: אבטחה > חסימה > פרסומת > הגנה > AI
+assert m.decide("messages-noreply@linkedin.com", "LinkedIn digest", "keep") == "block"
+assert m.decide("security@mail.instagram.com", "New login to Instagram", "junk") == "security"  # אבטחה עוברת חסימה
+assert m.decide("info@max-finance.co.il", "הבחירה עליכם – הקאשבק עלינו. פרסומת", "junk") == "junk"  # מוגן, אבל פרסומת
 assert m.decide("noreply@openai.com", "Your API credit balance has $3.00 remaining", "junk") == "keep"
 assert m.decide("inbal_shahar@mod.gov.il", "אגף השיקום", "keep") == "important"
 assert m.decide("news@shop.com", "מבצע", "junk") == "junk"
@@ -53,5 +59,10 @@ h = {"List-Unsubscribe": "<mailto:u@x.com>, <https://x.com/u?id=1>", "List-Unsub
 assert m.one_click_url(h) == "https://x.com/u?id=1"
 assert m.one_click_url({"List-Unsubscribe": "<https://x.com/u>"}) is None  # בלי One-Click — לא נוגעים
 assert m.one_click_url({}) is None
+
+# שחזור מהפח: מוגן, לא פרסומת
+assert m.should_rescue("noreply@openai.com", "Your OpenAI API credit balance has $3.00 remaining")
+assert not m.should_rescue("info@max-finance.co.il", "הבחירה עליכם – הקאשבק עלינו. פרסומת")
+assert not m.should_rescue("news@shop.com", "מבצע")
 
 print("ok")

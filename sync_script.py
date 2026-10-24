@@ -86,18 +86,30 @@ def is_blocked(address: str) -> bool:
 def is_protected(address: str, subject: str) -> bool:
     return _matches(address, rules.PROTECT) or bool(re.search(rules.PROTECT_SUBJECT, subject or "", re.I))
 
+def is_ad(subject: str) -> bool:
+    # לפי החוק פרסומת מסומנת "פרסומת" בתחילת הנושא או בסופו; באמצע (חשבונית "מכיל דבר פרסומת") — לא
+    s = (subject or "").strip(" .|-–")
+    return s.startswith("פרסומת") or s.endswith("פרסומת")
+
 CATEGORIES = {"bill", "coupon", "important", "security", "keep", "junk"}
 
 def decide(address: str, subject: str, ai_category: str) -> str:
-    """חסימה גוברת על הכל; הגנה הופכת "זבל" ל"להשאיר"; שולח חשוב תמיד מקבל התראה."""
+    """אבטחה > חסימה > פרסומת > הגנה > AI; שולח חשוב תמיד מקבל התראה."""
+    if re.search(rules.SECURITY_SUBJECT, subject or "", re.I):
+        return "security"
     if is_blocked(address):
         return "block"
     category = ai_category if ai_category in CATEGORIES else "keep"
-    if category == "junk" and is_protected(address, subject):
+    if is_ad(subject):
+        category = "junk"
+    elif category == "junk" and is_protected(address, subject):
         category = "keep"
     if category in ("keep", "security") and _matches(address, rules.IMPORTANT):
         category = "important"
     return category
+
+def should_rescue(address: str, subject: str) -> bool:
+    return is_protected(address, subject) and decide(address, subject, "keep") not in ("block", "junk")
 
 def _site(host: str) -> str:
     """הדומיין הרשום: pay.meiavivim.co.il → meiavivim.co.il, a.b.example.com → example.com."""
@@ -283,7 +295,8 @@ def triage(gmail, calendar):
     blocked_query = "in:inbox from:(" + " OR ".join(rules.BLOCK) + ")"
     for msg in fetch(gmail, blocked_query, 500):
         mail = metadata(gmail, msg["id"])
-        if is_blocked(mail["sender"]):  # החיפוש של Gmail רחב יותר מהכלל — מוודאים
+        # החיפוש של Gmail רחב יותר מהכלל, והתראות אבטחה עוברות חסימה — לכן decide
+        if decide(mail["sender"], mail["subject"], "junk") == "block":
             junk(gmail, mail, unsubscribed, stats)
             stats["blocked"] += 1
 
@@ -291,7 +304,7 @@ def triage(gmail, calendar):
     skip = " ".join(f"-label:{name}" for name in [DONE_LABEL, *OLD_LABELS])
     for msg in fetch(gmail, f"in:inbox newer_than:3d {skip}", 100):
         mail = metadata(gmail, msg["id"])
-        if is_blocked(mail["sender"]):
+        if decide(mail["sender"], mail["subject"], "junk") == "block":
             continue  # כבר טופל בשלב 1
         try:
             ai = ask_ai(TRIAGE_PROMPT.format(sender=mail["from"], subject=mail["subject"], snippet=mail["snippet"][:500]))
@@ -378,7 +391,7 @@ def rescue(gmail) -> int:
     restored, old_id = 0, label_id(gmail, OLD_CLEANER_LABEL)
     for msg in fetch(gmail, f"in:trash label:{OLD_CLEANER_LABEL}", 500):
         mail = metadata(gmail, msg["id"])
-        if is_protected(mail["sender"], mail["subject"]) and not is_blocked(mail["sender"]):
+        if should_rescue(mail["sender"], mail["subject"]):
             act(f"restore: {mail['subject'][:60]}", gmail.users().messages().untrash(userId="me", id=mail["id"]).execute)
             act("drop old label", gmail.users().messages().modify(
                 userId="me", id=mail["id"], body={"removeLabelIds": [old_id]}).execute)
