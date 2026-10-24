@@ -71,6 +71,8 @@ assert m.known_category("news@shop.com", "מבצע", ["CATEGORY_PROMOTIONS"]) ==
 assert m.known_category("info@max-finance.co.il", "x", ["CATEGORY_PROMOTIONS"]) == "bill"  # מוכר גובר
 assert m.known_category("news@bank.co.il", "חשבונית", ["CATEGORY_PROMOTIONS"]) is None  # מוגן — שואלים AI
 assert m.known_category("someone@shop.com", "hello", ["CATEGORY_UPDATES"]) is None
+assert m.known_category("aryehlayani426@gmail.com", "(ללא נושא)", []) == "important"  # אנשים פרטיים
+assert m.decide("donotreply@digital.gov.il", "מכשיר חדש נקשר לחשבונך", "important") == "security"
 
 # 📥 איפה כל סוג נשאר: (תווית, נשאר בתיבה?)
 assert m.placement("important") == ("📬 חשוב", True)

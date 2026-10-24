@@ -14,7 +14,7 @@ BLOCK = [
 ]
 
 # 🔐 התראות אבטחה עוברות גם שולח חסום (למשל security@mail.instagram.com)
-SECURITY_SUBJECT = r"security|sign.?in|password|verif|login|new device|אבטח|סיסמ|אימות|התחברות"
+SECURITY_SUBJECT = r"security|sign.?in|password|verif|login|new device|אבטח|סיסמ|אימות|התחברות|מכשיר חדש"
 # קודים חד-פעמיים — יוצאים מהתיבה אחרי יום (התווית נשארת)
 CODE_SUBJECT = r"code|קוד|כניסה חד פעמית"
 
@@ -34,7 +34,7 @@ PROTECT_SUBJECT = (
 
 # 🏷️ שולחים מוכרים — הקטגוריה נקבעת בלי AI (חוסך טוקנים). כתובת מדויקת גוברת על דומיין.
 KNOWN = {
-    "important": ["gov.il", "maccabi4u.org.il", "che.org.il"],
+    "important": ["gov.il", "maccabi4u.org.il", "che.org.il", "gmail.com"],  # gmail.com = אנשים פרטיים
     "studies": ["afeka.ac.il"],
     "bill": ["meiavivim.co.il", "milgam.co.il", "amisragas.co.il", "max-finance.co.il", "10bis.co.il",
              "wolt.com", "googleplay-noreply@google.com", "invoice@mail.anthropic.com"],
