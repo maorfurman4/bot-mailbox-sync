@@ -19,7 +19,8 @@ SECURITY_SUBJECT = r"security|sign.?in|password|verif|login|new device|אבטח|
 AFEKA_SYSTEM = ["sms", "afekais.do.not.reply", "targilim", "helpdesk"]
 
 # 🧾 שולח קבלות מוכר נחשב "חשבון" רק אם הנושא באמת נראה כמו קבלה; אחרת ה-AI מחליט (Wolt שולחים גם פרסומות)
-RECEIPT_SUBJECT = r"קבל|חשבונ|חשבון|תשלום|חיוב|רכישה|עסק|הזמנ|₪|receipt|invoice|payment|refund|order|statement|paid|balance"
+# "הזמנה/order" בכוונה לא כאן — אישור הזמנה שייך ל"הזמנות", לא ל"חשבונות"
+RECEIPT_SUBJECT = r"קבל|חשבונ|חשבון|תשלום|חיוב|רכישה|עסק|₪|receipt|invoice|payment|refund|statement|paid|balance"
 
 # ⏳ "אדם": כתובת של ספק מייל פרטי, או כתובת אישית בסגנון first.last / first_last — ולא מערכת או תשובה אוטומטית
 PERSONAL_DOMAINS = ["gmail.com", "walla.co.il", "walla.com", "hotmail.com", "outlook.com", "yahoo.com", "icloud.com"]

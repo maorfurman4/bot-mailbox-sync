@@ -129,6 +129,8 @@ assert m.merge_action("block", "x") == "block" and m.merge_action("bill", "x") =
 assert m.MERGE_LABELS == ["חיובים[", "split", "הזמנות", "קופוננים קארפור", "רודוס", "הנדסת חשמל", "עוסק פטור", "חשוב", "קופונים"]
 
 # שולחים מוכרים שה-AI פספס
+assert m.known_category("service@10bis.co.il", "הזמנת משלוח משופרסל - כלל ארצי", []) is None  # הזמנה, לא חשבון → AI
+assert m.known_category("service@10bis.co.il", "חשבונית עבור הזמנתך", []) == "bill"
 assert m.known_category("hello@splitwise.com", "'ועד בית 3 חודשים' (₪750.00) added by Maxim a.", []) == "bill"
 assert m.known_category("hello@splitwise.com", "Amit Hooberman paid you ₪133.33", []) == "bill"
 assert m.known_category("info@payme.io", "רכישה 107059544 בוצעה בהצלחה", []) == "bill"
