@@ -393,8 +393,9 @@ def rescue(gmail) -> int:
         mail = metadata(gmail, msg["id"])
         if should_rescue(mail["sender"], mail["subject"]):
             act(f"restore: {mail['subject'][:60]}", gmail.users().messages().untrash(userId="me", id=mail["id"]).execute)
-            act("drop old label", gmail.users().messages().modify(
-                userId="me", id=mail["id"], body={"removeLabelIds": [old_id]}).execute)
+            # המעבר לפח מוריד את INBOX — מחזירים לתיבה, כלא נקרא, כדי שבאמת תראה אותו
+            act("back to inbox", gmail.users().messages().modify(
+                userId="me", id=mail["id"], body={"removeLabelIds": [old_id], "addLabelIds": ["INBOX", "UNREAD"]}).execute)
             restored += 1
     return restored
 
