@@ -30,6 +30,8 @@ assert not m.is_ad("חשבונית מחברת אמישראגז - מכיל דבר
 # ההחלטה הסופית: אבטחה > חסימה > פרסומת > הגנה > AI
 assert m.decide("messages-noreply@linkedin.com", "LinkedIn digest", "keep") == "block"
 assert m.decide("security@mail.instagram.com", "New login to Instagram", "junk") == "security"  # אבטחה עוברת חסימה
+assert m.decide("security@mail.instagram.com", "Username changed on Instagram", "junk") == "security"  # לפי השולח
+assert m.decide("no-reply@mail.instagram.com", "see more in your feed", "keep") == "block"
 assert m.decide("info@max-finance.co.il", "הבחירה עליכם – הקאשבק עלינו. פרסומת", "junk") == "junk"  # מוגן, אבל פרסומת
 assert m.decide("noreply@openai.com", "Your API credit balance has $3.00 remaining", "junk") == "keep"
 assert m.decide("inbal_shahar@mod.gov.il", "אגף השיקום", "keep") == "important"

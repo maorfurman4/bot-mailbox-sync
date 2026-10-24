@@ -95,7 +95,7 @@ CATEGORIES = {"bill", "coupon", "important", "security", "keep", "junk"}
 
 def decide(address: str, subject: str, ai_category: str) -> str:
     """אבטחה > חסימה > פרסומת > הגנה > AI; שולח חשוב תמיד מקבל התראה."""
-    if re.search(rules.SECURITY_SUBJECT, subject or "", re.I):
+    if re.search(rules.SECURITY_SUBJECT, subject or "", re.I) or address.split("@")[0] in ("security", "account", "accounts"):
         return "security"
     if is_blocked(address):
         return "block"
