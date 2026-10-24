@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """
-מנהל המייל — רץ 3 פעמים ביום (GitHub Actions).
-כל מייל חדש בתיבה: חסימה (rules.BLOCK) → סיווג AI → הגנה (rules.PROTECT) → פעולה:
-  🧾 חשבון/קבלה → בוט הקבלות (+PDF, קישור תשלום בטוח, חשבון פתוח → יומן)
-  🎟️ קופון → תיקיית "קופונים"   📬 חשוב → התראה   🗑️ זבל/חסום → פח + ביטול הרשמה
-TeachingBox → סוכן הלימודים (עדכון היומן).
-DRY_RUN=1: רק מדפיס החלטות — לא נוגע במייל, ביומן או בטלגרם.
+מנהל המייל — רץ 3 פעמים ביום (GitHub Actions) ומסדר את Gmail בתוויות.
+כל מייל חדש בתיבה: חסימה → שולח מוכר / מיון של Gmail (בלי AI) → AI רק למה שנשאר → הגנה → מקום:
+  📬 חשוב, 🧾 חשבון פתוח, 🎓 לימודים, 🔐 אבטחה — בתיבה עם תווית
+  🧾 קבלה ששולמה, 💻 פיתוח, ✈️ הזמנות, 🎟️ קופונים, 📁 כללי — בארכיון, בתוך התווית
+  🗑️ זבל/חסום — לפח + ביטול הרשמה
+טלגרם: רק חשבונות וקבלות (בוט הקבלות) ודוח תקלות.
+DRY_RUN=1: רק מדפיס החלטות. ORGANIZE_ALL=1: מסדר גם את כל המיילים הישנים בתיבה (בלי טלגרם/יומן).
 """
 import base64
 import html
@@ -17,7 +18,6 @@ import sys
 from datetime import datetime, timedelta
 from email.utils import parseaddr
 from urllib.parse import urlparse
-from zoneinfo import ZoneInfo
 
 import requests
 from google.auth.transport.requests import Request
@@ -34,28 +34,32 @@ except ImportError:
 # =============================================================================
 # ─── CONFIG & SECRETS ────────────────────────────────────────────────────────
 # =============================================================================
-IL_TZ = ZoneInfo("Asia/Jerusalem")
 DRY_RUN = os.environ.get("DRY_RUN", "").strip() == "1"
+ORGANIZE_ALL = os.environ.get("ORGANIZE_ALL", "").strip() == "1"
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 
 DONE_LABEL = "Mail_Bot_Done"          # כל מייל שהבוט טיפל בו
-OLD_LABELS = ["Processed_By_Bot"]     # טופלו ע"י הגרסה הקודמת — לא שולחים שוב
-COUPON_LABEL = "קופונים"
+OLD_LABELS = ["Processed_By_Bot"]     # טופלו ע"י הגרסה הקודמת — לא שולחים שוב לטלגרם
 OLD_CLEANER_LABEL = "Maintenance_Processed"  # המנקה הישן — ממנו משחזרים
 
-# בוט הלימודים — גם התראות "מייל חשוב" ודוח תקלות
+# קטגוריה → (תווית, נשאר בתיבה?, צבע רקע). בתיבה נשאר רק מה שצריך טיפול.
+PLACES = {
+    "important": ("📬 חשוב", True, "#fb4c2f"),
+    "bill": ("🧾 חשבונות", True, "#ffad47"),
+    "studies": ("🎓 לימודים", True, "#4a86e8"),
+    "security": ("🔐 אבטחה", True, "#a479e2"),
+    "dev": ("💻 פיתוח", False, "#666666"),
+    "orders": ("✈️ הזמנות ונסיעות", False, "#16a766"),
+    "coupon": ("🎟️ קופונים", False, "#f691b3"),
+    "other": ("📁 כללי", False, "#cccccc"),
+}
+CATEGORIES = set(PLACES) | {"junk"}
+
+# בוט הלימודים — רק דוח תקלות; בוט הקבלות — חשבונות וקבלות
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 CHAT_ID = os.environ.get("CHAT_ID", "").strip()
 TELEGRAM_TOKEN_RECEIPTS = os.environ.get("TELEGRAM_TOKEN_RECEIPTS", "").strip()
 CHAT_ID_RECEIPTS = os.environ.get("CHAT_ID_RECEIPTS", "").strip()
-
-LECTURER_MAP = {
-    "רמי אלקיים": "מעבדת מכניקה", "גבריאל בן סימון": "מדר (הרצאה)", "בועז ויינר": "מדר (תרגול)",
-    "בועז": "מדר (תרגול)", "יוני": "חדו\"א (הרצאה)", "אלינה ליס": "חדו\"א (תרגול)",
-    "אלינה": "חדו\"א (תרגול)", "אפרת אבישי": "פיזיקה חשמל (הרצאה)", "אבישי": "פיזיקה חשמל (הרצאה)",
-    "אילנה": "פיזיקה חשמל (תרגול)", "ד\"ר גבי שפט": "הנדסת חשמל א' (הרצאה + תרגול)",
-    "גבי שפט": "הנדסת חשמל א' (הרצאה + תרגול)", "ערן לבינגר": "מערכות ספרתיות (הרצאה + תרגול)",
-}
 
 FAILURES = []
 
@@ -91,27 +95,46 @@ def is_ad(subject: str) -> bool:
     s = (subject or "").strip(" .|-–")
     return s.startswith("פרסומת") or s.endswith("פרסומת")
 
-CATEGORIES = {"bill", "coupon", "important", "security", "keep", "junk"}
+def known_category(address: str, subject: str, gmail_labels: list):
+    """קטגוריה בלי AI: שולח מוכר (כתובת מדויקת לפני דומיין), או פרסומת/רשת חברתית לפי Gmail. None = לשאול AI."""
+    exact = [c for c, entries in rules.KNOWN.items() if address in entries]
+    if exact:
+        return exact[0]
+    for category, entries in rules.KNOWN.items():
+        if _matches(address, [e for e in entries if "@" not in e]):
+            return category
+    if {"CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"} & set(gmail_labels) and not is_protected(address, subject):
+        return "junk"
+    return None
 
-def decide(address: str, subject: str, ai_category: str) -> str:
-    """אבטחה > חסימה > פרסומת > הגנה > AI; שולח חשוב תמיד מקבל התראה."""
+def decide(address: str, subject: str, category: str) -> str:
+    """אבטחה > חסימה > פרסומת > הגנה > קטגוריה; שולח ממשלתי/בריאות תמיד "חשוב"."""
     if re.search(rules.SECURITY_SUBJECT, subject or "", re.I) or address.split("@")[0] in ("security", "account", "accounts"):
         return "security"
     if is_blocked(address):
         return "block"
-    category = ai_category if ai_category in CATEGORIES else "keep"
+    category = category if category in CATEGORIES else "other"
     if is_ad(subject):
         category = "junk"
     elif category == "junk" and is_protected(address, subject):
-        category = "keep"
-    if category in ("keep", "security") and _matches(address, rules.IMPORTANT):
+        category = "other"
+    if category == "other" and _matches(address, rules.KNOWN["important"]):
         category = "important"
-    if category == "important" and _matches(address, rules.NO_ALERT):
-        category = "keep"
     return category
 
+def placement(category: str, paid: bool = False) -> tuple:
+    name, in_inbox, _ = PLACES[category]
+    return name, in_inbox and not (category == "bill" and paid)
+
+def parse_batch(answer: dict, count: int) -> dict:
+    out = {}
+    for r in answer.get("results", []) if isinstance(answer, dict) else []:
+        if isinstance(r, dict) and r.get("i") in range(count) and r.get("category") in CATEGORIES:
+            out[r["i"]] = r["category"]
+    return out
+
 def should_rescue(address: str, subject: str) -> bool:
-    return is_protected(address, subject) and decide(address, subject, "keep") not in ("block", "junk")
+    return is_protected(address, subject) and decide(address, subject, "other") not in ("block", "junk")
 
 def _site(host: str) -> str:
     """הדומיין הרשום: pay.meiavivim.co.il → meiavivim.co.il, a.b.example.com → example.com."""
@@ -132,9 +155,6 @@ def parse_due(text):
     except ValueError:
         return None
 
-def local_iso(date_iso: str, hhmm: str) -> str:
-    return datetime.strptime(f"{date_iso} {hhmm}", "%Y-%m-%d %H:%M").replace(tzinfo=IL_TZ).isoformat()
-
 def one_click_url(headers: dict):
     """ביטול הרשמה רק בתקן One-Click (RFC 8058) — בלי לפתוח דפים ובלי לשלוח מיילים בשמך."""
     if "one-click" not in (headers.get("List-Unsubscribe-Post") or "").lower():
@@ -154,13 +174,21 @@ def get_google_services():
         creds.refresh(Request())
     return build("gmail", "v1", credentials=creds), build("calendar", "v3", credentials=creds)
 
-def label_id(gmail, name: str) -> str:
-    for label in gmail.users().labels().list(userId="me").execute().get("labels", []):
-        if label["name"] == name:
-            return label["id"]
-    if DRY_RUN:
-        return f"<{name}>"
-    return gmail.users().labels().create(userId="me", body={"name": name}).execute()["id"]
+_LABELS = {}
+
+def label_id(gmail, name: str, color: str | None = None) -> str:
+    if not _LABELS:
+        _LABELS.update({l["name"]: l["id"] for l in gmail.users().labels().list(userId="me").execute().get("labels", [])})
+    if name not in _LABELS:
+        if DRY_RUN:
+            return f"<{name}>"
+        body = {"name": name, "labelListVisibility": "labelShow", "messageListVisibility": "show"}
+        try:
+            _LABELS[name] = gmail.users().labels().create(userId="me", body={
+                **body, "color": {"backgroundColor": color, "textColor": "#ffffff"}} if color else body).execute()["id"]
+        except Exception:  # צבע שלא בפלטה של Gmail — בלי צבע
+            _LABELS[name] = gmail.users().labels().create(userId="me", body=body).execute()["id"]
+    return _LABELS[name]
 
 def safe_b64decode(data: str) -> bytes:
     data = data or ""
@@ -195,7 +223,7 @@ def extract_body(gmail, msg_id, payload, snippet="") -> str:
                 body_text += extract_body(gmail, msg_id, part)
     elif payload.get("body", {}).get("data"):
         body_text += strip_html(text_of(payload["body"]["data"]))
-    clean = body_text.strip()
+    clean = re.sub(r"\s+", " ", body_text).strip()
     return clean if len(clean) > 10 else snippet
 
 def pdf_attachments(gmail, msg_id, payload) -> list:
@@ -230,10 +258,10 @@ def telegram_file(token, chat_id, name: str, data: bytes):
     if not resp.json().get("ok"):
         raise RuntimeError(f"Telegram file: {resp.json().get('description')}")
 
-def ask_ai(prompt: str, model: str = "gpt-4o-mini") -> dict:
-    resp = requests.post("https://api.openai.com/v1/chat/completions", timeout=60,
+def ask_ai(prompt: str) -> dict:
+    resp = requests.post("https://api.openai.com/v1/chat/completions", timeout=90,
                          headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                         json={"model": model, "temperature": 0, "response_format": {"type": "json_object"},
+                         json={"model": "gpt-4o-mini", "temperature": 0, "response_format": {"type": "json_object"},
                                "messages": [{"role": "user", "content": prompt}]})
     resp.raise_for_status()
     return json.loads(resp.json()["choices"][0]["message"]["content"])
@@ -241,22 +269,21 @@ def ask_ai(prompt: str, model: str = "gpt-4o-mini") -> dict:
 # =============================================================================
 # ─── מיון ────────────────────────────────────────────────────────────────────
 # =============================================================================
-TRIAGE_PROMPT = """אתה ממיין את המייל של מאור — סטודנט להנדסת חשמל באפקה, מאבטח במשמרות, מפתח אפליקציות ובוטים.
-סווג את המייל לאחת:
-- "bill": חשבון לתשלום, דרישת תשלום, חשבונית או קבלה על רכישה/תשלום.
-- "coupon": שובר, קופון, גיפט קארד או קוד הטבה שאפשר לממש.
-- "important": משהו שמאור צריך לראות או לטפל בו — אדם פרטי שכותב לו, לימודים, ממשלה, בריאות,
-  בנק, משפטי, עבודה, פנייה שמחכה לתשובה.
-- "security": התראת אבטחה, כניסה ממכשיר חדש, שינוי סיסמה, קוד אימות.
-- "keep": שימושי אבל לא דחוף — אישורי הזמנה, טיסות, התראות מערכת (GitHub/Vercel), עדכוני שירות.
-- "junk": פרסומת, מבצע, ניוזלטר, רשת חברתית, משהו שלא קשור אליו.
-summary: משפט אחד בעברית — מה המייל אומר ומה (אם בכלל) צריך לעשות.
+TRIAGE_PROMPT = """אתה ממיין את המייל של מאור — סטודנט להנדסת חשמל, מאבטח במשמרות, מפתח אפליקציות ובוטים.
+לכל מייל ברשימה בחר קטגוריה אחת:
+important = אדם פרטי שכותב לו, ממשלה, בריאות, בנק, משפטי, עבודה, משהו שמחכה לתשובה או לטיפול
+bill = חשבון לתשלום, דרישת תשלום, חשבונית או קבלה
+coupon = שובר, קופון, גיפט קארד, קוד הטבה למימוש
+studies = לימודים ואוניברסיטה
+security = התראת אבטחה, כניסה ממכשיר חדש, שינוי סיסמה, קוד אימות
+dev = GitHub, Vercel, שרתים, פיתוח תוכנה
+orders = אישור הזמנה, טיסה, נסיעה, כרטיס, שירות שהוזמן
+other = שימושי אבל לא דחוף
+junk = פרסומת, מבצע, ניוזלטר, רשת חברתית, לא קשור אליו
 
-שולח: {sender}
-נושא: {subject}
-תקציר: {snippet}
+{emails}
 
-החזר JSON בלבד: {{"category": "...", "summary": "..."}}"""
+החזר JSON בלבד: {{"results": [{{"i": 0, "category": "..."}}]}}"""
 
 def fetch(gmail, query: str, limit: int) -> list:
     msgs, token = [], None
@@ -274,7 +301,8 @@ def metadata(gmail, msg_id: str) -> dict:
         metadataHeaders=["From", "Subject", "List-Unsubscribe", "List-Unsubscribe-Post"]).execute()
     headers = {h["name"]: h["value"] for h in full.get("payload", {}).get("headers", [])}
     return {"id": msg_id, "headers": headers, "from": headers.get("From", ""), "sender": sender_of(headers.get("From", "")),
-            "subject": headers.get("Subject", "(ללא נושא)"), "snippet": html.unescape(full.get("snippet", ""))}
+            "subject": headers.get("Subject", "(ללא נושא)"), "snippet": html.unescape(full.get("snippet", "")),
+            "labels": full.get("labelIds", [])}
 
 def junk(gmail, mail: dict, unsubscribed: set, stats: dict):
     url = one_click_url(mail["headers"])
@@ -286,78 +314,90 @@ def junk(gmail, mail: dict, unsubscribed: set, stats: dict):
         except Exception as ex:
             print(f"⚠️ unsubscribe failed for {mail['sender']}: {ex}")
     act(f"trash: {mail['sender']} | {mail['subject'][:60]}", gmail.users().messages().trash(userId="me", id=mail["id"]).execute)
-    stats["trashed"] += 1
+    stats["junk"] += 1
 
-def triage(gmail, calendar):
-    stats = {k: 0 for k in ("blocked", "trashed", "unsubscribed", "bill", "coupon", "important", "kept")}
+def classify(mails: list) -> dict:
+    """שולח מוכר / מיון של Gmail בלי AI; את השאר — קריאת AI אחת לכל 25 מיילים."""
+    result = {m["id"]: known_category(m["sender"], m["subject"], m["labels"]) for m in mails}
+    unknown = [m for m in mails if result[m["id"]] is None]
+    for start in range(0, len(unknown), 25):
+        chunk = unknown[start:start + 25]
+        listing = "\n".join(f'{i}. שולח: {m["from"]} | נושא: {m["subject"]} | תקציר: {m["snippet"][:200]}'
+                            for i, m in enumerate(chunk))
+        try:
+            answers = parse_batch(ask_ai(TRIAGE_PROMPT.format(emails=listing)), len(chunk))
+        except Exception as ex:
+            fail("סיווג AI", ex)
+            answers = {}
+        for i, m in enumerate(chunk):
+            result[m["id"]] = answers.get(i, "other")  # בלי תשובה → כללי (לא נמחק)
+    print(f"🧮 {len(mails)} emails: {len(mails) - len(unknown)} by rules, {len(unknown)} by AI "
+          f"in {-(-len(unknown) // 25)} call(s)")
+    return result
+
+def organize(gmail, calendar):
+    stats = {k: 0 for k in ("junk", "unsubscribed", "codes_archived", *PLACES)}
     unsubscribed = set()
-    done_id, coupon_id = label_id(gmail, DONE_LABEL), label_id(gmail, COUPON_LABEL)
+    done_id = label_id(gmail, DONE_LABEL)
 
     # 1) שולחים חסומים — כל מה שבתיבה, גם ישן
-    blocked_query = "in:inbox from:(" + " OR ".join(rules.BLOCK) + ")"
-    for msg in fetch(gmail, blocked_query, 500):
+    for msg in fetch(gmail, "in:inbox from:(" + " OR ".join(rules.BLOCK) + ")", 500):
         mail = metadata(gmail, msg["id"])
         # החיפוש של Gmail רחב יותר מהכלל, והתראות אבטחה עוברות חסימה — לכן decide
         if decide(mail["sender"], mail["subject"], "junk") == "block":
             junk(gmail, mail, unsubscribed, stats)
-            stats["blocked"] += 1
 
-    # 2) מיילים חדשים — סיווג AI והחלטה
+    # 2) מיילים חדשים (או כל התיבה ב-ORGANIZE_ALL) → קטגוריה → תווית ומקום
     skip = " ".join(f"-label:{name}" for name in [DONE_LABEL, *OLD_LABELS])
-    for msg in fetch(gmail, f"in:inbox newer_than:3d {skip}", 100):
-        mail = metadata(gmail, msg["id"])
-        if decide(mail["sender"], mail["subject"], "junk") == "block":
-            continue  # כבר טופל בשלב 1
-        try:
-            ai = ask_ai(TRIAGE_PROMPT.format(sender=mail["from"], subject=mail["subject"], snippet=mail["snippet"][:500]))
-        except Exception as ex:
-            fail(f"סיווג: {mail['subject'][:40]}", ex)
-            continue
-        action = decide(mail["sender"], mail["subject"], ai.get("category", ""))
-        print(f"📨 {action:9} ← {ai.get('category')!s:9} | {mail['sender']} | {mail['subject'][:60]}")
+    query = f"in:inbox {skip}" if ORGANIZE_ALL else f"in:inbox newer_than:3d {skip}"
+    mails = [m for m in (metadata(gmail, msg["id"]) for msg in fetch(gmail, query, 1000 if ORGANIZE_ALL else 100))
+             if decide(m["sender"], m["subject"], "other") != "block"]
+    categories = classify(mails)
+    for mail in mails:
+        action = decide(mail["sender"], mail["subject"], categories[mail["id"]])
+        print(f"📨 {action:9} ← {categories[mail['id']]!s:9} | {mail['sender']} | {mail['subject'][:60]}")
         try:
             if action == "junk":
                 junk(gmail, mail, unsubscribed, stats)
-            elif action == "bill":
-                handle_bill(gmail, calendar, mail)
-            elif action == "coupon":
-                act(f"→ {COUPON_LABEL}: {mail['subject'][:60]}", gmail.users().messages().modify(
-                    userId="me", id=mail["id"], body={"addLabelIds": [coupon_id], "removeLabelIds": ["INBOX"]}).execute)
-            elif action == "important":
-                act(f"alert: {mail['subject'][:60]}", telegram, TELEGRAM_TOKEN, CHAT_ID,
-                    f"📬 <b>מייל חשוב</b>\n👤 {html.escape(mail['from'])}\n📝 {html.escape(mail['subject'])}\n"
-                    f"💡 {html.escape(ai.get('summary', ''))}",
-                    [{"text": "📧 פתח את המייל", "url": gmail_link(mail["id"])}])
-            stats[action if action in stats else "kept"] += 1
+                continue
+            paid = True
+            if action == "bill" and not ORGANIZE_ALL:  # מיילים ישנים — רק תווית, בלי טלגרם ויומן
+                paid = handle_bill(gmail, calendar, mail)
+            name, in_inbox = placement(action, paid=paid)
+            body = {"addLabelIds": [label_id(gmail, name, PLACES[action][2]), done_id]}
+            if not in_inbox:
+                body["removeLabelIds"] = ["INBOX"]
+            act(f"{name}{'' if in_inbox else ' (archive)'}: {mail['subject'][:50]}",
+                gmail.users().messages().modify(userId="me", id=mail["id"], body=body).execute)
+            stats[action] += 1
         except Exception as ex:
             fail(f"{action}: {mail['subject'][:40]}", ex)
-            continue
-        if action != "junk":
-            act("label done", gmail.users().messages().modify(
-                userId="me", id=mail["id"], body={"addLabelIds": [done_id]}).execute)
+
+    # 3) קודים חד-פעמיים — יוצאים מהתיבה אחרי יום
+    security = PLACES["security"][0]
+    for msg in fetch(gmail, f'in:inbox label:"{security}" older_than:1d', 100):
+        mail = metadata(gmail, msg["id"])
+        if re.search(rules.CODE_SUBJECT, mail["subject"], re.I):
+            act(f"archive old code: {mail['subject'][:50]}", gmail.users().messages().modify(
+                userId="me", id=mail["id"], body={"removeLabelIds": ["INBOX"]}).execute)
+            stats["codes_archived"] += 1
     return stats
 
 # =============================================================================
-# ─── חשבונות וקבלות ──────────────────────────────────────────────────────────
+# ─── חשבונות וקבלות → בוט הקבלות ─────────────────────────────────────────────
 # =============================================================================
-BILL_PROMPT = """אתה מנתח חשבונות וקבלות. קרא בעיון את הטקסט (כולל טקסט מחולץ מ-PDF).
-החזר JSON בלבד (אם חסר — "לא צוין"):
-{{
-  "merchant": "שם החברה/ספק",
-  "amount": "סכום (רק המספר)",
-  "currency": "₪/$/€",
-  "billing_period": "תקופת החשבון או תאריך",
-  "due_date": "תאריך אחרון לתשלום DD/MM/YYYY, או 'לא צוין'",
-  "payment_link": "קישור URL לתשלום כפי שהוא מופיע בטקסט, או 'לא נמצא'",
-  "is_paid": true/false (true אם זו קבלה על תשלום שכבר בוצע)
-}}
-טקסט המייל:
+BILL_PROMPT = """חלץ מהחשבון/קבלה (כולל טקסט מ-PDF). JSON בלבד, ואם חסר — "לא צוין":
+{{"merchant": "שם הספק", "amount": "רק המספר", "currency": "₪/$/€", "billing_period": "תקופה או תאריך",
+"due_date": "DD/MM/YYYY או לא צוין", "payment_link": "קישור תשלום כפי שמופיע בטקסט, או לא נמצא",
+"is_paid": true/false}}
+טקסט:
 {body}"""
 
-def handle_bill(gmail, calendar, mail: dict):
+def handle_bill(gmail, calendar, mail: dict) -> bool:
+    """שולח לבוט הקבלות; מחזיר האם שולם (קבלה ששולמה יוצאת מהתיבה)."""
     full = gmail.users().messages().get(userId="me", id=mail["id"], format="full").execute()
     body = extract_body(gmail, mail["id"], full["payload"], mail["snippet"])
-    bill = ask_ai(BILL_PROMPT.format(body=body[:8000]))
+    bill = ask_ai(BILL_PROMPT.format(body=body[:3000]))  # הנתונים בחשבונית נמצאים בהתחלה
     is_paid = bool(bill.get("is_paid"))
     merchant, amount, currency = bill.get("merchant", "לא צוין"), bill.get("amount", "?"), bill.get("currency", "₪")
     due = parse_due(bill.get("due_date"))
@@ -385,6 +425,7 @@ def handle_bill(gmail, calendar, mail: dict):
                 "start": {"date": due}, "end": {"date": end},
                 "extendedProperties": {"private": {"mailbot": mail["id"]}},
             }).execute)
+    return is_paid
 
 # =============================================================================
 # ─── שחזור — מה שהמנקה הישן העביר לפח בטעות ─────────────────────────────────
@@ -402,118 +443,14 @@ def rescue(gmail) -> int:
     return restored
 
 # =============================================================================
-# ─── AGENT: ACADEMIC (TeachingBox → יומן) ────────────────────────────────────
-# =============================================================================
-def fetch_teachingbox_emails(gmail) -> list[dict]:
-    query = f'(label:TeachingBox OR "TeachingBox") -label:{OLD_LABELS[0]} -label:{DONE_LABEL}'
-    emails = []
-    for msg in fetch(gmail, query, 20):
-        full = gmail.users().messages().get(userId="me", id=msg["id"], format="full").execute()
-        headers = {h["name"]: h["value"] for h in full["payload"]["headers"]}
-        emails.append({"id": msg["id"], "subject": headers.get("Subject", ""),
-                       "body": extract_body(gmail, msg["id"], full["payload"], full.get("snippet", ""))})
-    return emails
-
-def analyze_email_with_openai(email: dict) -> dict:
-    lecturer_list = "\n".join(f"- {k} → {v}" for k, v in LECTURER_MAP.items())
-    return ask_ai(f"""אתה עוזר אקדמי. קרא את *תוכן המייל בלבד* (התעלם מהתאריך והשעה שבהם נשלח).
-עליך לחלץ מידע מדויק:
-1. action: "cancellation", "update", "delay", או "ignore".
-2. is_permanent: האם קבוע? true או false.
-3. lecturer: שם המרצה מהרשימה.
-4. course: שם הקורס מהרשימה.
-5. event_date: תאריך השיעור (YYYY-MM-DD). אם אין, null.
-6. start_time/end_time: שעות (HH:MM). אם אין, null.
-7. room: מספר חדר. אם אין, "לא צוין".
-8. change_details: הסבר קצר.
-רשימת מרצים:
-{lecturer_list}
-גוף המייל:
-{email['body']}
-החזר JSON בלבד במבנה המתאים.""")
-
-def find_calendar_event(calendar, course: str, event_dt: str) -> dict | None:
-    if not event_dt:
-        return None
-    dt = datetime.fromisoformat(event_dt)
-    events = calendar.events().list(calendarId="primary", timeMin=(dt - timedelta(hours=2)).isoformat(),
-                                    timeMax=(dt + timedelta(hours=2)).isoformat(), q=course,
-                                    singleEvents=True).execute().get("items", [])
-    return events[0] if events else None
-
-def update_event(calendar, event: dict, change_details: str, room: str, is_permanent: bool):
-    event["description"] = event.get("description", "") + f"\n\n📝 עדכון בוט: {change_details}"
-    if room and room != "לא צוין":
-        event["location"] = room
-    if is_permanent and "recurringEventId" in event:
-        master = calendar.events().get(calendarId="primary", eventId=event["recurringEventId"]).execute()
-        if room and room != "לא צוין":
-            master["location"] = room
-        master["description"] = event["description"]
-        act("update recurring class", calendar.events().update(
-            calendarId="primary", eventId=master["id"], body=master).execute)
-    else:
-        act("update class", calendar.events().update(calendarId="primary", eventId=event["id"], body=event).execute)
-
-def add_event(calendar, course: str, event_dt: str, change_details: str, room: str):
-    if not event_dt:
-        return
-    dt = datetime.fromisoformat(event_dt)
-    event = {"summary": f"📚 {course}", "description": f"📝 {change_details}",
-             "start": {"dateTime": dt.isoformat(), "timeZone": "Asia/Jerusalem"},
-             "end": {"dateTime": (dt + timedelta(hours=2)).isoformat(), "timeZone": "Asia/Jerusalem"}}
-    if room and room != "לא צוין":
-        event["location"] = room
-    act(f"add class {course}", calendar.events().insert(calendarId="primary", body=event).execute)
-
-def process_academic(gmail, calendar) -> int:
-    done_id, count = label_id(gmail, DONE_LABEL), 0
-    for email in fetch_teachingbox_emails(gmail):
-        try:
-            a = analyze_email_with_openai(email)
-            action = a.get("action", "ignore")
-            course, lecturer, room = a.get("course", "קורס לא ידוע"), a.get("lecturer", ""), a.get("room", "לא צוין")
-            event_date, start_time, details = a.get("event_date"), a.get("start_time"), a.get("change_details", "")
-            # שעון ישראל אמיתי — לא +03:00 קבוע (בחורף זה היה מזיז שעה)
-            event_dt = local_iso(event_date, start_time) if event_date and start_time else None
-            when = datetime.fromisoformat(event_dt).strftime("%d/%m/%Y") if event_dt else (event_date or "לא צוין")
-            if action == "cancellation":
-                event = find_calendar_event(calendar, course, event_dt)
-                if event:
-                    act(f"delete class {course}", calendar.events().delete(calendarId="primary", eventId=event["id"]).execute)
-                act("academic → telegram", telegram, TELEGRAM_TOKEN, CHAT_ID,
-                    f"⚠️ <b>בוטל שיעור:</b> {course}\n👨‍🏫 <b>מרצה:</b> {lecturer}\n📅 <b>תאריך:</b> {when}\n🗑️ הוסר מהיומן.")
-            elif action == "update":
-                event = find_calendar_event(calendar, course, event_dt)
-                if event:
-                    update_event(calendar, event, details, room, a.get("is_permanent", False))
-                else:
-                    add_event(calendar, course, event_dt, details, room)
-                perm = "🔄 <b>שינוי קבוע במערכת!</b>" if a.get("is_permanent") else "📅 <b>שינוי חד פעמי</b>"
-                act("academic → telegram", telegram, TELEGRAM_TOKEN, CHAT_ID,
-                    f"✅ <b>עדכון במערכת:</b> {course}\n{perm}\n👨‍🏫 <b>מרצה:</b> {lecturer}\n📅 <b>תאריך:</b> {when}\n"
-                    f"⏰ <b>שעות:</b> {start_time or '?'} - {a.get('end_time') or '?'}\n🚪 <b>חדר:</b> {room}\n📝 <b>פרטים:</b> {details}")
-            elif action == "delay":
-                act("academic → telegram", telegram, TELEGRAM_TOKEN, CHAT_ID,
-                    f"⏳ <b>הודעת עיכוב:</b> {course}\n👨‍🏫 <b>המרצה:</b> {lecturer} מתעכב.\n📅 <b>תאריך:</b> {when}\n"
-                    f"🚪 <b>חדר:</b> {room}\n📝 <b>פרטים:</b> {details}")
-            act("label done", gmail.users().messages().modify(
-                userId="me", id=email["id"], body={"addLabelIds": [done_id]}).execute)
-            count += 1
-        except Exception as ex:
-            fail(f"לימודים: {email['subject'][:40]}", ex)
-    return count
-
-# =============================================================================
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 # =============================================================================
 def main():
     gmail, calendar = get_google_services()
-    print(f"--- Mail manager {'(DRY RUN — no changes)' if DRY_RUN else ''} ---")
+    print(f"--- Mail manager{' (DRY RUN — no changes)' if DRY_RUN else ''}{' (ORGANIZE ALL)' if ORGANIZE_ALL else ''} ---")
     restored = rescue(gmail)
-    stats = triage(gmail, calendar)
-    academic = process_academic(gmail, calendar)
-    print(f"🏁 restored={restored} academic={academic} " + " ".join(f"{k}={v}" for k, v in stats.items()))
+    stats = organize(gmail, calendar)
+    print(f"🏁 restored={restored} " + " ".join(f"{k}={v}" for k, v in stats.items()))
     if FAILURES:
         act("failures → telegram", telegram, TELEGRAM_TOKEN, CHAT_ID,
             "⚠️ <b>מנהל המייל — מה לא עבד:</b>\n" + "\n".join(FAILURES))

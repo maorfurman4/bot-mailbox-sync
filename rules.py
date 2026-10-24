@@ -13,6 +13,11 @@ BLOCK = [
     "info.trenitalia.it",
 ]
 
+# 🔐 התראות אבטחה עוברות גם שולח חסום (למשל security@mail.instagram.com)
+SECURITY_SUBJECT = r"security|sign.?in|password|verif|login|new device|אבטח|סיסמ|אימות|התחברות"
+# קודים חד-פעמיים — יוצאים מהתיבה אחרי יום (התווית נשארת)
+CODE_SUBJECT = r"code|קוד|כניסה חד פעמית"
+
 # 🛡️ לא נמחקים לעולם, גם אם ה-AI חושב שזה זבל
 PROTECT = [
     "afeka.ac.il", "gov.il", "maccabi4u.org.il", "che.org.il",
@@ -22,19 +27,21 @@ PROTECT = [
     "github.com", "vercel.com", "openai.com", "anthropic.com", "google.com",
     "gmail.com",                 # אנשים פרטיים
 ]
-# 🔐 התראות אבטחה עוברות גם שולח חסום (למשל security@mail.instagram.com)
-SECURITY_SUBJECT = r"security|sign.?in|password|verif|login|new device|אבטח|סיסמ|אימות|התחברות"
-
 PROTECT_SUBJECT = (
     r"security|sign.?in|password|verif|login|new device|"
     r"אבטח|סיסמ|אימות|התחברות|כניסה|חשבונית|קבלה|חשבון|תשלום|invoice|receipt"
 )
 
-# 📬 תמיד מקבלים התראה בטלגרם
-IMPORTANT = ["gov.il", "maccabi4u.org.il", "che.org.il"]
-
-# 🔕 אף פעם לא שולחים עליהם התראה (אבל הם עדיין מוגנים ולא נמחקים)
-NO_ALERT = ["afeka.ac.il"]
+# 🏷️ שולחים מוכרים — הקטגוריה נקבעת בלי AI (חוסך טוקנים). כתובת מדויקת גוברת על דומיין.
+KNOWN = {
+    "important": ["gov.il", "maccabi4u.org.il", "che.org.il"],
+    "studies": ["afeka.ac.il"],
+    "bill": ["meiavivim.co.il", "milgam.co.il", "amisragas.co.il", "max-finance.co.il", "10bis.co.il",
+             "wolt.com", "googleplay-noreply@google.com", "invoice@mail.anthropic.com"],
+    "dev": ["github.com", "vercel.com", "replit.com", "supabase.com", "supabase.io", "render.com"],
+    "orders": ["bookaflight.co.il", "israir.co.il", "elal-airlines.com", "elal.co.il", "gett.com",
+               "autotel.co.il", "planetcinema.co.il"],
+}
 
 # 💳 קישור תשלום מוצג רק אם הוא באתר של השולח עצמו או של סולק מוכר
 PAYMENT_PROCESSORS = ["tranzila.com", "cardcom.solutions", "meshulam.co.il", "payplus.co.il",

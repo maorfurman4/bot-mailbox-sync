@@ -11,6 +11,10 @@ on:
         description: "הרצה יבשה — רק מדפיס החלטות, בלי לגעת במייל/יומן/טלגרם"
         type: boolean
         default: false
+      organize_all:
+        description: "לסדר בתוויות גם את כל המיילים הישנים בתיבה (בלי טלגרם ויומן)"
+        type: boolean
+        default: false
 
 jobs:
   sync:
@@ -33,6 +37,7 @@ jobs:
       - name: Run mail manager
         env:
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+          ORGANIZE_ALL: ${{ inputs.organize_all && '1' || '' }}
           GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
