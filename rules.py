@@ -15,8 +15,14 @@ BLOCK = [
 
 # 🔐 התראות אבטחה עוברות גם שולח חסום (למשל security@mail.instagram.com)
 SECURITY_SUBJECT = r"security|sign.?in|password|verif|login|new device|אבטח|סיסמ|אימות|התחברות|מכשיר חדש"
-# קודים חד-פעמיים — לפח אחרי יום
-CODE_SUBJECT = r"code|קוד|כניסה חד פעמית"
+# 🎓 דיוור מערכת של אפקה — לארכיון מיד, לפח אחרי 48 שעות. אנשים (מרצים, סטודנטים ב-s.afeka.ac.il) — לא
+AFEKA_SYSTEM = ["sms", "afekais.do.not.reply", "targilim", "helpdesk"]
+
+# 🧾 שולח קבלות מוכר נחשב "חשבון" רק אם הנושא באמת נראה כמו קבלה; אחרת ה-AI מחליט (Wolt שולחים גם פרסומות)
+RECEIPT_SUBJECT = r"קבל|חשבונ|חשבון|תשלום|חיוב|רכישה|עסקה|הזמנ|receipt|invoice|payment|refund|order|statement"
+
+# ⏳ שולח שהוא מערכת ולא אדם — לא מחכה לתשובה ממך
+NOT_PERSON = r"reply|notif|news|service|support|system|mailer|alert|security|billing|invoice|marketing|bounce"
 
 # 🛡️ לא נמחקים לעולם, גם אם ה-AI חושב שזה זבל
 PROTECT = [

@@ -52,8 +52,11 @@ PLACES = {
     "orders": ("✈️ הזמנות ונסיעות", False, "#16a766"),
     "coupon": ("🎟️ קופונים", False, "#f691b3"),
     "other": ("📁 כללי", False, "#cccccc"),
+    "waiting": ("⏳ ממתין לתשובה", True, "#fad165"),  # לא קטגוריה של מיון — נוסף למייל חשוב שלא ענית לו
 }
-CATEGORIES = set(PLACES) | {"junk"}
+CATEGORIES = set(PLACES) - {"waiting"} | {"junk"}
+EXPIRY_DAYS = {"security": 1, "dev": 1, "studies": 2}  # אחרי כמה ימים לפח (בלימודים — רק דיוור מערכת)
+WAITING_AFTER_DAYS = 3
 
 # בוט הלימודים — רק דוח תקלות; בוט הקבלות — חשבונות וקבלות
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
@@ -98,11 +101,10 @@ def is_ad(subject: str) -> bool:
 def known_category(address: str, subject: str, gmail_labels: list):
     """קטגוריה בלי AI: שולח מוכר (כתובת מדויקת לפני דומיין), או פרסומת/רשת חברתית לפי Gmail. None = לשאול AI."""
     exact = [c for c, entries in rules.KNOWN.items() if address in entries]
-    if exact:
-        return exact[0]
-    for category, entries in rules.KNOWN.items():
-        if _matches(address, [e for e in entries if "@" not in e]):
-            return category
+    known = exact[0] if exact else next(
+        (c for c, entries in rules.KNOWN.items() if _matches(address, [e for e in entries if "@" not in e])), None)
+    if known and not (known == "bill" and not re.search(rules.RECEIPT_SUBJECT, subject or "", re.I)):
+        return known
     if {"CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"} & set(gmail_labels) and not is_protected(address, subject):
         return "junk"
     return None
@@ -122,13 +124,25 @@ def decide(address: str, subject: str, category: str) -> str:
         category = "important"
     return category
 
-def is_expired(category: str, subject: str) -> bool:
-    """אחרי יום כבר אין בהם ערך: קודים חד-פעמיים, והתראות פיתוח (GitHub/Vercel)."""
-    return category == "dev" or (category == "security" and bool(re.search(rules.CODE_SUBJECT, subject or "", re.I)))
+def is_afeka_system(address: str) -> bool:
+    local, _, domain = address.partition("@")
+    return domain == "afeka.ac.il" and (local in rules.AFEKA_SYSTEM or "reply" in local)
 
-def placement(category: str, paid: bool = False) -> tuple:
+def is_expired(category: str, subject: str, address: str) -> bool:
+    """אבטחה ופיתוח — כולם; לימודים — רק דיוור מערכת של אפקה (שיחה שענית בה נבדקת בנפרד)."""
+    return category in ("security", "dev") or (category == "studies" and is_afeka_system(address))
+
+def is_person(address: str) -> bool:
+    return not re.search(rules.NOT_PERSON, address.split("@")[0], re.I)
+
+def i_replied(thread_labels: list) -> bool:
+    return any("SENT" in labels for labels in thread_labels)
+
+def placement(category: str, paid: bool = False, address: str = "") -> tuple:
     name, in_inbox, _ = PLACES[category]
-    return name, in_inbox and not (category == "bill" and paid)
+    if (category == "bill" and paid) or (category == "studies" and is_afeka_system(address)):
+        in_inbox = False
+    return name, in_inbox
 
 def parse_batch(answer: dict, count: int) -> dict:
     out = {}
@@ -307,7 +321,11 @@ def metadata(gmail, msg_id: str) -> dict:
     headers = {h["name"]: h["value"] for h in full.get("payload", {}).get("headers", [])}
     return {"id": msg_id, "headers": headers, "from": headers.get("From", ""), "sender": sender_of(headers.get("From", "")),
             "subject": headers.get("Subject", "(ללא נושא)"), "snippet": html.unescape(full.get("snippet", "")),
-            "labels": full.get("labelIds", [])}
+            "labels": full.get("labelIds", []), "thread": full.get("threadId")}
+
+def replied(gmail, mail: dict) -> bool:
+    thread = gmail.users().threads().get(userId="me", id=mail["thread"], format="minimal").execute()
+    return i_replied([m.get("labelIds", []) for m in thread.get("messages", [])])
 
 def junk(gmail, mail: dict, unsubscribed: set, stats: dict):
     url = one_click_url(mail["headers"])
@@ -341,7 +359,7 @@ def classify(mails: list) -> dict:
     return result
 
 def organize(gmail, calendar):
-    stats = {k: 0 for k in ("junk", "unsubscribed", "expired", *PLACES)}
+    stats = {k: 0 for k in ("junk", "unsubscribed", "expired", *PLACES)}  # כולל "waiting"
     unsubscribed = set()
     done_id = label_id(gmail, DONE_LABEL)
 
@@ -368,7 +386,7 @@ def organize(gmail, calendar):
             paid = True
             if action == "bill" and not ORGANIZE_ALL:  # מיילים ישנים — רק תווית, בלי טלגרם ויומן
                 paid = handle_bill(gmail, calendar, mail)
-            name, in_inbox = placement(action, paid=paid)
+            name, in_inbox = placement(action, paid=paid, address=mail["sender"])
             body = {"addLabelIds": [label_id(gmail, name, PLACES[action][2]), done_id]}
             if not in_inbox:
                 body["removeLabelIds"] = ["INBOX"]
@@ -378,17 +396,31 @@ def organize(gmail, calendar):
         except Exception as ex:
             fail(f"{action}: {mail['subject'][:40]}", ex)
 
-    # 3) פג תוקף אחרי יום → לפח (קודים חד-פעמיים, התראות פיתוח). לפי מזהה התווית — חיפוש לפי שם עם אימוג'י לא אמין
-    for category in ("security", "dev"):
+    # 3) פג תוקף → לפח: אבטחה ופיתוח אחרי יום, דיוור מערכת של אפקה אחרי יומיים — אבל לא שיחה שענית בה.
+    #    לפי מזהה התווית — חיפוש לפי שם עם אימוג'י לא אמין
+    for category, days in EXPIRY_DAYS.items():
         lid = label_id(gmail, PLACES[category][0])
         if lid.startswith("<"):
             continue  # DRY_RUN לפני שהתווית נוצרה
-        for msg in fetch(gmail, "older_than:1d -in:trash", 500, [lid]):
+        for msg in fetch(gmail, f"older_than:{days}d -in:trash", 500, [lid]):
             mail = metadata(gmail, msg["id"])
-            if is_expired(category, mail["subject"]):
+            if is_expired(category, mail["subject"], mail["sender"]) and not (
+                    category == "studies" and replied(gmail, mail)):
                 act(f"expired → trash: {mail['subject'][:50]}",
                     gmail.users().messages().trash(userId="me", id=mail["id"]).execute)
                 stats["expired"] += 1
+
+    # 4) ⏳ ממתין לתשובה — מייל חשוב מאדם, בתיבה יותר מ-3 ימים, ועוד לא ענית בשיחה
+    important_id, waiting_id = label_id(gmail, PLACES["important"][0]), label_id(gmail, *PLACES["waiting"][::2])
+    if not important_id.startswith("<"):
+        for msg in fetch(gmail, f"in:inbox older_than:{WAITING_AFTER_DAYS}d", 200, [important_id]):
+            mail = metadata(gmail, msg["id"])
+            waiting = is_person(mail["sender"]) and not replied(gmail, mail)
+            if waiting != (waiting_id in mail["labels"]):  # להוסיף, או להוריד אחרי שענית
+                act(f"{'⏳ waiting' if waiting else '✔️ replied'}: {mail['subject'][:50]}",
+                    gmail.users().messages().modify(userId="me", id=mail["id"], body={
+                        "addLabelIds" if waiting else "removeLabelIds": [waiting_id]}).execute)
+                stats["waiting"] += waiting
     return stats
 
 # =============================================================================

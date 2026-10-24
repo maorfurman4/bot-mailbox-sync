@@ -66,9 +66,12 @@ assert m.known_category("sms@afeka.ac.il", "יום הבחירות", []) == "stud
 assert m.known_category("googleplay-noreply@google.com", "Order Receipt", []) == "bill"
 assert m.known_category("no-reply@accounts.google.com", "Security alert", []) is None  # google.com כללי — לא bill
 assert m.known_category("info@wolt.com", "קבלת רכישה", []) == "bill"
+assert m.known_category("couriers@mail.wolt.com", "רוצים לטוס למונדיאל 2026?!", []) is None  # שולח קבלות, אבל לא קבלה
+assert m.known_category("noreply@dominos.co.il", "החשבונית שלך מדומינו'ס", []) is None  # לא מוכר → AI
 assert m.known_category("noreply@bookaflight.co.il", "ההזמנה שלך", []) == "orders"
 assert m.known_category("news@shop.com", "מבצע", ["CATEGORY_PROMOTIONS"]) == "junk"  # Gmail כבר מיין
-assert m.known_category("info@max-finance.co.il", "x", ["CATEGORY_PROMOTIONS"]) == "bill"  # מוכר גובר
+assert m.known_category("info@max-finance.co.il", "פירוט חיובים חודשי", ["CATEGORY_PROMOTIONS"]) == "bill"  # מוכר גובר
+assert m.known_category("info@max-finance.co.il", "x", ["CATEGORY_PROMOTIONS"]) is None  # בלי מילות קבלה, ומוגן → AI
 assert m.known_category("news@bank.co.il", "חשבונית", ["CATEGORY_PROMOTIONS"]) is None  # מוגן — שואלים AI
 assert m.known_category("someone@shop.com", "hello", ["CATEGORY_UPDATES"]) is None
 assert m.known_category("aryehlayani426@gmail.com", "(ללא נושא)", []) == "important"  # אנשים פרטיים
@@ -79,20 +82,37 @@ assert m.placement("important") == ("📬 חשוב", True)
 assert m.placement("bill", paid=False) == ("🧾 חשבונות", True)
 assert m.placement("bill", paid=True) == ("🧾 חשבונות", False)
 assert m.placement("studies") == ("🎓 לימודים", True)
+assert m.placement("waiting") == ("⏳ ממתין לתשובה", True)
 assert m.placement("security") == ("🔐 אבטחה", True)
 assert m.placement("dev") == ("💻 פיתוח", False)
 assert m.placement("orders") == ("✈️ הזמנות ונסיעות", False)
 assert m.placement("coupon") == ("🎟️ קופונים", False)
 assert m.placement("other") == ("📁 כללי", False)
 
-# ⌛ פג תוקף אחרי יום → לפח: קודים חד-פעמיים ו-💻 פיתוח; התראת אבטחה אמיתית נשארת
-assert m.is_expired("security", "Your Vercel security code: 448014")
-assert m.is_expired("security", "כניסה חד פעמית לאתר בהצדעה")
-assert not m.is_expired("security", "Security alert")
-assert not m.is_expired("security", "Your AliExpress Account Password Has Been Changed")
-assert m.is_expired("dev", "[maorfurman4/bot-task-calendar] Run failed: Deploy Yossi to Vercel")
-assert m.is_expired("dev", "Preview deployment failed for amiret-prep")
-assert not m.is_expired("important", "קוד גישה לבניין")  # רק בתוויות שהוגדרו
+# ⌛ פג תוקף → לפח: כל מה שבאבטחה ובפיתוח אחרי יום; דיוור מערכת של אפקה אחרי יומיים
+assert m.EXPIRY_DAYS == {"security": 1, "dev": 1, "studies": 2}
+assert m.is_expired("security", "Your Vercel security code: 448014", "system@vercel.com")
+assert m.is_expired("security", "Security alert", "no-reply@accounts.google.com")
+assert m.is_expired("dev", "Preview deployment failed for amiret-prep", "notifications@vercel.com")
+assert m.is_expired("studies", "יום הבחירות 27.10", "sms@afeka.ac.il")
+assert m.is_expired("studies", "x", "afekais.do.not.reply@afeka.ac.il")
+assert not m.is_expired("studies", "דוח ניסוי 5", "aryeh.layani@s.afeka.ac.il")  # סטודנט — אדם פרטי
+assert not m.is_expired("studies", "'[EXTERNAL] - '", "ramie@afeka.ac.il")      # מרצה שכותב אישית
+assert not m.is_expired("studies", "היי מאור", "help@limudnaim.co.il")          # לא אפקה
+assert not m.is_expired("important", "x", "sms@afeka.ac.il")
+
+# דיוור מערכת של אפקה → ישר לארכיון; אנשים מאפקה נשארים בתיבה
+assert m.is_afeka_system("sms@afeka.ac.il") and m.is_afeka_system("targilim@afeka.ac.il")
+assert m.is_afeka_system("helpdesk@afeka.ac.il") and not m.is_afeka_system("batia@afeka.ac.il")
+assert m.placement("studies", address="sms@afeka.ac.il") == ("🎓 לימודים", False)
+assert m.placement("studies", address="ramie@afeka.ac.il") == ("🎓 לימודים", True)
+
+# שיחה שענית בה — לא נמחקת ולא "ממתינה לתשובה"
+assert m.i_replied([["INBOX"], ["SENT"]]) and not m.i_replied([["INBOX"], ["INBOX", "UNREAD"]])
+
+# ⏳ ממתין לתשובה — רק אדם אמיתי, לא מערכת
+assert m.is_person("gash69@gmail.com") and m.is_person("inbal_shahar@mod.gov.il")
+assert not m.is_person("do_not_reply@maccabi4u.org.il") and not m.is_person("noreply@electiontraining.co.il")
 
 # קריאת AI אחת לכמה מיילים — תשובה חלקית או שגויה לא מפילה כלום
 assert m.parse_batch({"results": [{"i": 0, "category": "dev"}, {"i": 2, "category": "junk"}, {"i": 9, "category": "x"}]}, 3) == {
