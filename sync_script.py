@@ -39,6 +39,7 @@ ORGANIZE_ALL = os.environ.get("ORGANIZE_ALL", "").strip() == "1"
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 
 MERGE = os.environ.get("MERGE_LABELS", "").strip() == "1"
+TIDY_INBOX = os.environ.get("TIDY_INBOX", "").strip() == "1"
 
 DONE_LABEL = "Mail_Bot_Done"          # כל מייל שהבוט טיפל בו (מוסתרת מרשימת התוויות)
 # התוויות שלך — מתמזגות לתוויות החדשות ונמחקות (באישור מאור, 24/10/2026)
@@ -436,6 +437,13 @@ def organize(gmail, calendar):
              if "DRAFT" not in m["labels"]]
     apply_labels(gmail, calendar, mails, stats, unsubscribed, move=not ORGANIZE_ALL, notify=not ORGANIZE_ALL)
 
+    # TIDY_INBOX (חד-פעמי): כל מה שבתיבה — גם מה שכבר סומן — מקבל תווית ועובר למקום שלו. בלי טלגרם/יומן
+    if TIDY_INBOX:
+        inbox = [m for m in (metadata(gmail, msg["id"]) for msg in fetch(gmail, "in:inbox", 1000))
+                 if "DRAFT" not in m["labels"]]
+        print(f"🧹 tidy inbox: {len(inbox)} emails")
+        apply_labels(gmail, calendar, inbox, stats, unsubscribed, move=True, notify=False)
+
     # 3) פג תוקף → לפח: אבטחה ופיתוח אחרי יום, דיוור מערכת של אפקה אחרי יומיים — אבל לא שיחה שענית בה.
     #    לפי מזהה התווית — חיפוש לפי שם עם אימוג'י לא אמין
     for category, days in EXPIRY_DAYS.items():
@@ -512,7 +520,8 @@ def handle_bill(gmail, calendar, mail: dict) -> bool:
 # =============================================================================
 def main():
     gmail, calendar = get_google_services()
-    modes = [m for m, on in (("DRY RUN — no changes", DRY_RUN), ("ORGANIZE ALL", ORGANIZE_ALL), ("MERGE LABELS", MERGE)) if on]
+    modes = [m for m, on in (("DRY RUN — no changes", DRY_RUN), ("ORGANIZE ALL", ORGANIZE_ALL), ("MERGE LABELS", MERGE),
+                             ("TIDY INBOX", TIDY_INBOX)) if on]
     print(f"--- Mail manager {' | '.join(modes)} ---")
     stats = organize(gmail, calendar)
     print("🏁 " + " ".join(f"{k}={v}" for k, v in stats.items()))
