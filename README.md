@@ -1,32 +1,38 @@
 # 📧 מנהל המייל
 
-סורק את ה-Gmail כל ערב עם 5 סוכנים, ושולח עדכונים ל-4 בוטים נפרדים בטלגרם.
+עובר על ה-Gmail שלוש פעמים ביום, ממיין כל מייל חדש ומטפל בו.
 
-## הסוכנים
-| סוכן | מה הוא עושה | לאן נשלח |
-|---|---|---|
-| 🧹 ניקוי | עובר על פרסומות/עדכונים ומעביר לפח מה שלא חשוב | — |
-| 🛒 קופונים | שוברים מקרפור ותן ביס — קוד וסכום | בוט הקופונים |
-| 🧾 חשבונות וקבלות | ספק, סכום, שולם/לא, כפתור תשלום | בוט הקבלות |
-| 📦 משלוחים | סטטוס, מספר מעקב, כפתור מעקב | בוט המשלוחים |
-| 🎓 לימודים | ביטול/שינוי/עיכוב שיעור מ-TeachingBox → מעדכן יומן | בוט הלימודים |
+## איך כל מייל ממוין
+1. **חסום** (`rules.BLOCK`: פרסומות עלי אקספרס, Alibaba, LinkedIn, Facebook, Instagram...) → לפח + ביטול הרשמה.
+   ביטול הרשמה רק בתקן One-Click של השולח (בלי לפתוח דפים ובלי לשלוח מיילים). חל גם על מיילים ישנים בתיבה.
+2. **סיווג AI** (gpt-4o-mini) של מיילים חדשים (3 ימים אחרונים): חשבון / קופון / חשוב / אבטחה / רגיל / זבל.
+3. **הגנה** (`rules.PROTECT`, `PROTECT_SUBJECT`): אפקה, gov.il, מכבי, בנקים, חשבונות, GitHub, Vercel, OpenAI,
+   אנשים פרטיים, וכל נושא עם אבטחה/סיסמה/אימות/חשבונית — **לא נמחקים לעולם**, גם אם ה-AI אמר זבל.
 
-מייל שעובד מקבל תווית `Processed_By_Bot` (ומייל שנבדק בניקוי — `Maintenance_Processed`) כדי שלא ייסרק שוב.
+| סוג | מה קורה |
+|---|---|
+| 🧾 חשבון/קבלה | בוט הקבלות: ספק, סכום, סטטוס, ה-PDF עצמו, כפתור למייל; כפתור תשלום רק לאתר של הספק או לסולק מוכר |
+| 📅 חשבון פתוח עם תאריך יעד | אירוע של יום שלם ביומן ביום האחרון לתשלום ("💳 לשלם...") — מופיע בתדריך של דבי |
+| 🎟️ קופון | תווית "קופונים", יוצא מהתיבה |
+| 📬 חשוב (וכל שולח מ-`rules.IMPORTANT`) | התראה בבוט הלימודים: שולח, נושא, תקציר, כפתור למייל |
+| 🗑️ זבל | לפח (ניתן לשחזר 30 יום) + ביטול הרשמה |
+| 🎓 TeachingBox | סוכן הלימודים — ביטול/שינוי/עיכוב שיעור → מעדכן יומן |
+
+כל מייל שטופל מקבל תווית `Mail_Bot_Done`. **שחזור**: מיילים מוגנים שהמנקה הישן (`Maintenance_Processed`) העביר לפח חוזרים לתיבה.
 
 ## מתי
-כל ערב (GitHub Actions, `.github/workflows/academic_calendar_sync.yml`). הרצה ידנית: Actions → "Academic Calendar Sync" → Run workflow.
+08:00, 14:00, 20:00 (GitHub Actions, `.github/workflows/academic_calendar_sync.yml`).
+הרצה ידנית: Actions → "Mail Manager" → Run workflow. **dry_run** = רק מדפיס מה היה עושה, בלי לשנות כלום.
+תקלה → הודעה בבוט הלימודים, וההרצה מסומנת ככישלון.
 
 ## קבצים
 | קובץ | תפקיד |
 |---|---|
 | `sync_script.py` | כל הלוגיקה |
-| `requirements.txt` | ספריות פייתון |
-| `.github/workflows/academic_calendar_sync.yml` | התזמון |
+| `rules.py` | רשימות השולחים — לחסום / להגן / להתריע |
+| `test_mail.py` | בדיקות: `python test_mail.py` |
 | `.github/workflows/keepalive.yml` | שומר שגיטהאב לא יכבה את התזמון |
 
 ## סודות (Settings → Secrets → Actions)
-`GOOGLE_CREDENTIALS`, `OPENAI_API_KEY`,
-`TELEGRAM_TOKEN` + `CHAT_ID` (לימודים),
-`TELEGRAM_TOKEN_COUPONS` + `CHAT_ID_COUPONS`,
-`TELEGRAM_TOKEN_RECEIPTS` + `CHAT_ID_RECEIPTS`,
-`TELEGRAM_TOKEN_DELIVERIES` + `CHAT_ID_DELIVERIES`
+`GOOGLE_CREDENTIALS`, `OPENAI_API_KEY`, `TELEGRAM_TOKEN` + `CHAT_ID` (בוט הלימודים — גם התראות ותקלות),
+`TELEGRAM_TOKEN_RECEIPTS` + `CHAT_ID_RECEIPTS`

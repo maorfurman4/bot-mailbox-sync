@@ -1,0 +1,57 @@
+"""בדיקות קצרות: python test_mail.py (בלי רשת, בלי Gmail)"""
+import os
+
+os.environ.setdefault("DRY_RUN", "1")
+import sync_script as m  # noqa: E402
+
+# כתובת השולח מתוך כותרת From
+assert m.sender_of('"AliExpress" <ae-msg-notify01@deals.aliexpress.com>') == "ae-msg-notify01@deals.aliexpress.com"
+assert m.sender_of("Info@Wolt.com") == "info@wolt.com"
+
+# חסימה: דומיין תופס תת-דומיינים, אבל לא דומיין שרק מכיל את השם
+assert m.is_blocked("messages-noreply@linkedin.com")
+assert m.is_blocked("noreply@buynotice.alibaba.com")
+assert m.is_blocked("aeug-member-benefits29@deals.aliexpress.com")
+assert not m.is_blocked("account@notice.aliexpress.com")  # קודי אימות ושינוי סיסמה
+assert not m.is_blocked("me@notlinkedin.com")
+
+# הגנה: לפי שולח או לפי נושא
+assert m.is_protected("inbal_shahar@mod.gov.il", "אגף השיקום")
+assert m.is_protected("aryehlayani426@gmail.com", "דוח ניסוי")
+assert m.is_protected("no-reply@accounts.example.com", "Security alert")
+assert m.is_protected("account@notice.aliexpress.com", "Your AliExpress Account Password Has Been Changed")
+assert m.is_protected("x@shop.com", "חשבונית עבור הזמנתך")
+assert not m.is_protected("news@shop.com", "מבצע סוף עונה")
+
+# ההחלטה הסופית: חסימה > הגנה > AI
+assert m.decide("messages-noreply@linkedin.com", "Security alert", "keep") == "block"
+assert m.decide("noreply@openai.com", "Your API credit balance has $3.00 remaining", "junk") == "keep"
+assert m.decide("inbal_shahar@mod.gov.il", "אגף השיקום", "keep") == "important"
+assert m.decide("news@shop.com", "מבצע", "junk") == "junk"
+assert m.decide("noreply@meiavivim.co.il", "חשבון מים תקופתי", "bill") == "bill"
+assert m.decide("store@carrefour.co.il", "שובר מתנה", "coupon") == "coupon"
+assert m.decide("x@shop.com", "y", "nonsense") == "keep"  # קטגוריה לא מוכרת — לא נוגעים
+
+# קישור תשלום: רק לאתר של השולח או לסולק מוכר, ורק אם באמת מופיע במייל
+body = "לתשלום: https://pay.meiavivim.co.il/bill?id=1 או https://evil.example/pay"
+assert m.safe_pay_link("https://pay.meiavivim.co.il/bill?id=1", "noreply@meiavivim.co.il", body)
+assert not m.safe_pay_link("https://evil.example/pay", "noreply@meiavivim.co.il", body)
+assert not m.safe_pay_link("https://pay.meiavivim.co.il/other", "noreply@meiavivim.co.il", body)  # לא במייל
+assert m.safe_pay_link("https://secure.tranzila.com/x", "invoice@amisragas.co.il", "https://secure.tranzila.com/x")
+assert not m.safe_pay_link("לא נמצא", "a@b.co.il", body)
+
+# תאריך יעד לתשלום
+assert m.parse_due("05/11/2026") == "2026-11-05"
+assert m.parse_due("לא צוין") is None and m.parse_due(None) is None
+
+# שעון ישראל אמיתי (חורף +02:00)
+assert m.local_iso("2026-11-02", "10:00").endswith("+02:00")
+assert m.local_iso("2026-10-20", "10:00").endswith("+03:00")
+
+# ביטול הרשמה: רק One-Click רשמי (RFC 8058)
+h = {"List-Unsubscribe": "<mailto:u@x.com>, <https://x.com/u?id=1>", "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"}
+assert m.one_click_url(h) == "https://x.com/u?id=1"
+assert m.one_click_url({"List-Unsubscribe": "<https://x.com/u>"}) is None  # בלי One-Click — לא נוגעים
+assert m.one_click_url({}) is None
+
+print("ok")
