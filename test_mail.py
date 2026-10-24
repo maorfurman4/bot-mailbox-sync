@@ -104,6 +104,7 @@ assert not m.is_expired("important", "x", "sms@afeka.ac.il")
 # דיוור מערכת של אפקה → ישר לארכיון; אנשים מאפקה נשארים בתיבה
 assert m.is_afeka_system("sms@afeka.ac.il") and m.is_afeka_system("targilim@afeka.ac.il")
 assert m.is_afeka_system("helpdesk@afeka.ac.il") and not m.is_afeka_system("batia@afeka.ac.il")
+assert m.is_afeka_system("teachingbox@afeka.ac.il") and m.is_afeka_system("learning@afeka.ac.il")  # TeachingBox — לא צריך
 assert m.placement("studies", address="sms@afeka.ac.il") == ("🎓 לימודים", False)
 assert m.placement("studies", address="ramie@afeka.ac.il") == ("🎓 לימודים", True)
 

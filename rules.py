@@ -16,7 +16,7 @@ BLOCK = [
 # 🔐 התראות אבטחה עוברות גם שולח חסום (למשל security@mail.instagram.com)
 SECURITY_SUBJECT = r"security|sign.?in|password|verif|login|new device|אבטח|סיסמ|אימות|התחברות|מכשיר חדש"
 # 🎓 דיוור מערכת של אפקה — לארכיון מיד, לפח אחרי 48 שעות. אנשים (מרצים, סטודנטים ב-s.afeka.ac.il) — לא
-AFEKA_SYSTEM = ["sms", "afekais.do.not.reply", "targilim", "helpdesk"]
+AFEKA_SYSTEM = ["sms", "afekais.do.not.reply", "targilim", "helpdesk", "teachingbox", "learning"]
 
 # 🧾 שולח קבלות מוכר נחשב "חשבון" רק אם הנושא באמת נראה כמו קבלה; אחרת ה-AI מחליט (Wolt שולחים גם פרסומות)
 # "הזמנה/order" בכוונה לא כאן — אישור הזמנה שייך ל"הזמנות", לא ל"חשבונות"
