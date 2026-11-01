@@ -144,4 +144,18 @@ assert m.inbox_change(False, ["INBOX"], move=True) == (None, "INBOX")
 assert m.inbox_change(True, ["INBOX"], move=True) == (None, None)
 assert m.inbox_change(False, ["INBOX"], move=False) == (None, None)
 
+# OpenAI חוסם לרגע (429) → מחכים ומנסים שוב, במקום לוותר על המייל (קרה 01/11/2026)
+class R:
+    def __init__(self, code, body=None):
+        self.status_code, self.headers, self._body = code, {"retry-after": "0"}, body
+    def json(self):
+        return self._body
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise m.requests.HTTPError(f"{self.status_code}")
+calls = [R(429), R(200, {"choices": [{"message": {"content": '{"a": 1}'}}]})]
+real_post, m.requests.post = m.requests.post, lambda *a, **k: calls.pop(0)
+assert m.ask_ai("x") == {"a": 1} and not calls
+m.requests.post = real_post
+
 print("ok")

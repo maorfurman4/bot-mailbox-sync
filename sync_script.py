@@ -15,6 +15,7 @@ import json
 import os
 import re
 import sys
+import time
 from datetime import datetime, timedelta
 from email.utils import parseaddr
 from urllib.parse import urlparse
@@ -292,10 +293,14 @@ def telegram_file(token, chat_id, name: str, data: bytes):
         raise RuntimeError(f"Telegram file: {resp.json().get('description')}")
 
 def ask_ai(prompt: str) -> dict:
-    resp = requests.post("https://api.openai.com/v1/chat/completions", timeout=90,
-                         headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                         json={"model": "gpt-4o-mini", "temperature": 0, "response_format": {"type": "json_object"},
-                               "messages": [{"role": "user", "content": prompt}]})
+    for wait in (10, 30, None):  # OpenAI חוסם לפעמים לרגע (429) — מחכים ומנסים שוב לפני שמוותרים
+        resp = requests.post("https://api.openai.com/v1/chat/completions", timeout=90,
+                             headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
+                             json={"model": "gpt-4o-mini", "temperature": 0, "response_format": {"type": "json_object"},
+                                   "messages": [{"role": "user", "content": prompt}]})
+        if resp.status_code not in (429, 500, 502, 503) or wait is None:
+            break
+        time.sleep(float(resp.headers.get("retry-after") or wait))
     resp.raise_for_status()
     return json.loads(resp.json()["choices"][0]["message"]["content"])
 
