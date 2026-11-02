@@ -67,6 +67,7 @@ TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN", "").strip()
 CHAT_ID = os.environ.get("CHAT_ID", "").strip()
 TELEGRAM_TOKEN_RECEIPTS = os.environ.get("TELEGRAM_TOKEN_RECEIPTS", "").strip()
 CHAT_ID_RECEIPTS = os.environ.get("CHAT_ID_RECEIPTS", "").strip()
+MONDAY_API_TOKEN = os.environ.get("MONDAY_API_TOKEN", "").strip()
 
 FAILURES = []
 
@@ -387,6 +388,8 @@ def apply_labels(gmail, calendar, mails, stats, unsubscribed, *, move: bool, not
                 junk(gmail, mail, unsubscribed, stats)
                 continue
             paid = True
+            if notify and (vendor := business_vendor(mail["sender"], mail["subject"])):
+                handle_expense(gmail, mail, vendor)  # בנוסף למיון הרגיל (Vercel/Render הם "פיתוח")
             if action == "bill" and notify:
                 paid = handle_bill(gmail, calendar, mail)
             name, in_inbox = placement(action, paid=paid, address=mail["sender"])
@@ -485,6 +488,8 @@ def handle_bill(gmail, calendar, mail: dict) -> bool:
     """שולח לבוט הקבלות; מחזיר האם שולם (קבלה ששולמה יוצאת מהתיבה)."""
     full = gmail.users().messages().get(userId="me", id=mail["id"], format="full").execute()
     body = extract_body(gmail, mail["id"], full["payload"], mail["snippet"])
+    if _matches(mail["sender"], ["splitwise.com"]):  # חשבונות הדירה — כללים, לא ה-AI הכללי (שם יצא "לא צוין — 135")
+        return handle_splitwise(mail, body, mail_date(full))
     bill = ask_ai(BILL_PROMPT.format(body=body[:3000]))  # הנתונים בחשבונית נמצאים בהתחלה
     is_paid = bool(bill.get("is_paid"))
     merchant, amount, currency = bill.get("merchant", "לא צוין"), bill.get("amount", "?"), bill.get("currency", "₪")
@@ -514,6 +519,116 @@ def handle_bill(gmail, calendar, mail: dict) -> bool:
                 "extendedProperties": {"private": {"mailbot": mail["id"]}},
             }).execute)
     return is_paid
+
+# =============================================================================
+# ─── 💸 כסף → monday: חשבונות הדירה (Splitwise) והוצאות עסק ────────────────────
+# =============================================================================
+def mail_date(full: dict):
+    return datetime.fromtimestamp(int(full.get("internalDate", 0)) / 1000).date()
+
+def money(text) -> float:
+    return float(str(text).replace(",", ""))
+
+def fmt(amount: float) -> str:
+    return f"{amount:g}" if amount != int(amount) else str(int(amount))
+
+def parse_splitwise(subject: str, text: str):
+    """→ (מה, למי, כמה אני חייב) / None = אין מה לשלם (אני מקבל, תשלום אליי, סיכום חודשי, עדכון)."""
+    added = re.match(r"^['\"“‘](.+?)\s*['\"”’]\s*\(₪[\d,.]+\)\s+added by (\S+)", subject or "")
+    if not added or re.search(r"you are owed|you get back", text or "", re.I):
+        return None
+    owe = re.search(r"you owe\s*₪\s*([\d,]+(?:\.\d+)?)", text or "", re.I)
+    item, who = added[1].strip(), added[2]
+    return item, rules.SPLITWISE_PAYEES.get(who, who), money(owe[1]) if owe else None
+
+SPLIT_PROMPT = """מייל מ-Splitwise. כמה מאור חייב (רק החלק שלו, לא הסכום הכולל)? אם הוא לא חייב כלום — null.
+JSON בלבד: {{"you_owe": מספר או null}}
+{text}"""
+
+def handle_splitwise(mail: dict, body: str, day) -> bool:
+    """הוצאה בדירה שמאור חייב בה → פריט "לשלם למקסים — חשמל 301 ₪" ב-💳 תשלומים. מחזיר "שולם?" (לתיבה או לארכיון)."""
+    parsed = parse_splitwise(mail["subject"], f"{mail['snippet']} {body}")
+    if not parsed:
+        return " updated by " not in mail["subject"]  # עדכון להוצאה — נשאר בתיבה שיראה; השאר לארכיון
+    item, payee, owe = parsed
+    if owe is None:  # הכללים לא מצאו "You owe" — AI כגיבוי
+        owe = (ask_ai(SPLIT_PROMPT.format(text=f"{mail['subject']}\n{body[:1500]}")) or {}).get("you_owe")
+        if not owe:
+            return True
+        owe = money(owe)
+    name = f"לשלם ל{payee} — {item} {fmt(owe)} ₪"
+    created = monday_add("אישיות", "תשלומים", name, mail["id"], {
+        "סטטוס": {"label": "לא התחיל"}, "דדליין": {"date": (day + timedelta(days=7)).isoformat()},
+        "הערות": {"text": f"{gmail_link(mail['id'])}\nSplitwise: סה\"כ לפי המייל, החלק שלך {fmt(owe)} ₪"}})
+    act(f"splitwise → telegram: {name}", telegram, TELEGRAM_TOKEN_RECEIPTS, CHAT_ID_RECEIPTS,
+        f"💳 <b>{html.escape(name)}</b>\n📅 עד {day + timedelta(days=7):%d/%m}" + ("" if created else " (כבר ב-monday)"),
+        [{"text": "📧 פתח את המייל", "url": gmail_link(mail["id"])}])
+    return False
+
+def business_vendor(address: str, subject: str):
+    """(ספק, מה, פרויקט) לקבלה של הוצאת עסק; None אם זה לא ספק עסקי או לא קבלה."""
+    domain = next((d for d in rules.BUSINESS_VENDORS if _matches(address, [d])), None)
+    if not domain or not re.search(rules.EXPENSE_SUBJECT, subject or "", re.I) \
+            or re.search(rules.NOT_EXPENSE_SUBJECT, subject or "", re.I):
+        return None
+    return rules.BUSINESS_VENDORS[domain]
+
+def parse_amount(text: str):
+    """(סכום, מטבע) לפי כללים: "charged $10.00" (OpenAI), "Amount paid $85.88" (Stripe), אחרת הראשון שנמצא."""
+    for pattern in (r"charged\s*(\$|₪)\s*([\d,]+(?:\.\d+)?)", r"amount paid\s*(\$|₪)\s*([\d,]+(?:\.\d+)?)",
+                    r"total\s*(\$|₪)\s*([\d,]+(?:\.\d+)?)", r"(\$|₪)\s*([\d,]+\.\d{2})"):
+        if m := re.search(pattern, text or "", re.I):
+            return money(m[2]), m[1]
+    return None
+
+def handle_expense(gmail, mail: dict, vendor: tuple) -> None:
+    """קבלה של הוצאת עסק → פריט "OpenAI — טעינת קרדיט API" ב-💰 הכנסות והוצאות (סוג הוצאה, סכום ב-₪, בוצע)."""
+    name_vendor, what, project = vendor
+    full = gmail.users().messages().get(userId="me", id=mail["id"], format="full").execute()
+    body = extract_body(gmail, mail["id"], full["payload"], mail["snippet"])
+    found = parse_amount(f"{mail['snippet']} {body}")
+    if not found:  # הכללים לא מצאו — AI כגיבוי
+        bill = ask_ai(BILL_PROMPT.format(body=body[:3000]))
+        try:
+            found = money(bill.get("amount")), "$" if "$" in str(bill.get("currency")) else "₪"
+        except (TypeError, ValueError):
+            fail(f"הוצאה בלי סכום: {mail['subject'][:40]}", "לא נמצא סכום")
+            return
+    amount, currency = found
+    ils = round(amount * rules.USD_TO_ILS) if currency == "$" else round(amount)
+    notes = [gmail_link(mail["id"]), f"${fmt(amount)} לפי שער קבוע {rules.USD_TO_ILS}" if currency == "$" else ""]
+    if project:
+        notes.append(f"פרויקט: {project}")
+    monday_add("עסקים", "הכנסות והוצאות", f"{name_vendor} — {what}", mail["id"], {
+        "סוג": {"label": "הוצאה"}, "סטטוס": {"label": "בוצע"}, "סכום (₪)": str(ils),
+        "דדליין": {"date": mail_date(full).isoformat()}, "הערות": {"text": "\n".join(filter(None, notes))}})
+
+def monday_gql(query: str, **variables) -> dict:
+    resp = requests.post("https://api.monday.com/v2", json={"query": query, "variables": variables}, timeout=30,
+                         headers={"Authorization": MONDAY_API_TOKEN, "API-Version": "2025-04"})
+    if not resp.ok:
+        raise RuntimeError(f"monday {resp.status_code}: {resp.text[:150]}")
+    body = resp.json()
+    if body.get("errors"):
+        raise RuntimeError(f"monday: {str(body['errors'])[:150]}")
+    return body["data"]
+
+def monday_add(board_part: str, group_part: str, name: str, mail_id: str, values: dict) -> bool:
+    """פריט חדש — לוח, קבוצה ועמודות לפי שם; מייל שכבר יובא (המזהה בהערות) לא נוצר פעמיים. מחזיר האם נוצר."""
+    boards = monday_gql("{ boards(state: active, limit: 100) { id name type groups { id title } columns { id title } } }")["boards"]
+    board = next(b for b in boards if b["type"] == "board" and board_part in b["name"])
+    group = next(g["id"] for g in board["groups"] if group_part in g["title"])
+    col = {c["title"]: c["id"] for c in board["columns"]}
+    q = {"rules": [{"column_id": col["הערות"], "compare_value": [mail_id], "operator": "contains_text"}]}
+    if monday_gql("query ($ids: [ID!], $q: ItemsQuery) { boards(ids: $ids) { items_page(limit: 1, query_params: $q)"
+                  " { items { id } } } }", ids=[board["id"]], q=q)["boards"][0]["items_page"]["items"]:
+        print(f"💤 monday: already there — {name}")
+        return False
+    act(f"monday → {board['name']} / {group_part}: {name}", monday_gql,
+        "mutation ($board: ID!, $group: String!, $name: String!, $values: JSON!) {"
+        " create_item(board_id: $board, group_id: $group, item_name: $name, column_values: $values) { id } }",
+        board=board["id"], group=group, name=name, values=json.dumps({col[t]: v for t, v in values.items()}))
+    return True
 
 # =============================================================================
 # ─── MAIN ────────────────────────────────────────────────────────────────────

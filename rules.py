@@ -56,3 +56,24 @@ KNOWN = {
 # 💳 קישור תשלום מוצג רק אם הוא באתר של השולח עצמו או של סולק מוכר
 PAYMENT_PROCESSORS = ["tranzila.com", "cardcom.solutions", "meshulam.co.il", "payplus.co.il",
                       "icredit.co.il", "pelecard.biz", "gov.il"]
+
+# 💸 הוצאות עסק → monday ("💼 עסקים ופרויקטים" → "💰 הכנסות והוצאות"). דומיין → (ספק, מה, פרויקט או None)
+BUSINESS_VENDORS = {
+    "openai.com": ("OpenAI", "טעינת קרדיט API", "🤖 בוטים בטלגרם (יוסי, חדשות)"),
+    "anthropic.com": ("Anthropic", "מנוי Claude", None),
+    "vercel.com": ("Vercel", "חיוב חודשי", "🎯 AMIRNET"),
+    "supabase.com": ("Supabase", "חיוב חודשי", "🎯 AMIRNET"),
+    "supabase.io": ("Supabase", "חיוב חודשי", "🎯 AMIRNET"),
+    "render.com": ("Render", "חיוב חודשי", "🛒 בוט עלי אקספרס"),
+    "namecheap.com": ("Namecheap", "דומיין", None),
+    "godaddy.com": ("GoDaddy", "דומיין", None),
+    "porkbun.com": ("Porkbun", "דומיין", None),
+    "cloudflare.com": ("Cloudflare", "דומיין", None),
+}
+# קבלה אמיתית — לא "נשארו לך $3", לא "החיוב נכשל", לא "יחויב בעוד שבוע"
+EXPENSE_SUBJECT = r"receipt|invoice|funded|payment|paid|קבלה|חשבונית"
+NOT_EXPENSE_SUBJECT = r"remaining|failed|declined|upcoming|will be charged|trial|reminder|past due"
+USD_TO_ILS = 3.7  # שער קבוע לתקציב; הסכום המקורי בדולרים נשמר גם בהערות
+
+# 🏠 Splitwise (קבוצת הדירה): מי הוסיף את ההוצאה → למי משלמים
+SPLITWISE_PAYEES = {"Maxim": "מקסים"}

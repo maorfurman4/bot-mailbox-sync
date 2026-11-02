@@ -54,4 +54,5 @@ jobs:
           CHAT_ID: ${{ secrets.CHAT_ID }}
           TELEGRAM_TOKEN_RECEIPTS: ${{ secrets.TELEGRAM_TOKEN_RECEIPTS }}
           CHAT_ID_RECEIPTS: ${{ secrets.CHAT_ID_RECEIPTS }}
+          MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
         run: python sync_script.py
