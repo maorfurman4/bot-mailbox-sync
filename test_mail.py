@@ -144,4 +144,32 @@ assert m.inbox_change(False, ["INBOX"], move=True) == (None, "INBOX")
 assert m.inbox_change(True, ["INBOX"], move=True) == (None, None)
 assert m.inbox_change(False, ["INBOX"], move=False) == (None, None)
 
+# 🏠 Splitwise → "לשלם למקסים — <מה> <החלק שלי> ₪" (לא הסכום הכולל; המיילים האמיתיים מ-30/10/2026)
+internet = ("'אינטרנט ' (₪135.00) added by Maxim a.",
+            "Hey Maor! Maxim just added “אינטרנט ” to the group “Bulbulim”. October 30, 2026 General אינטרנט "
+            "Total: ₪135.00 You owe ₪45.00 View on Splitwise")
+power = ("'חשמל ' (₪903.00) added by Maxim a.", "Total: ₪903.00 You owe ₪301.00")
+assert m.parse_splitwise(*internet) == ("אינטרנט", "מקסים", 45.0)
+assert m.parse_splitwise(*power) == ("חשמל", "מקסים", 301.0)
+assert m.parse_splitwise("'ועד בית 3 חודשים' (₪750.00) added by Maxim a.", "You owe ₪1,250.50")[2] == 1250.5
+assert m.parse_splitwise("'פיצה' (₪120.00) added by Maxim a.", "Total: ₪120.00 You are owed ₪80.00") is None
+assert m.parse_splitwise("Amit Hooberman paid you ₪133.33 on Splitwise", "") is None
+assert m.parse_splitwise("Your balance for October", "You owe ₪346.00") is None
+assert m.parse_splitwise("'אוכל שישי' (₪649.00) updated by Maxim a.", "You owe ₪200.00") is None
+assert m.parse_splitwise("'גז' (₪90.00) added by Amit H.", "no share line")[1:] == ("Amit", None)  # → AI כגיבוי
+assert m.fmt(45.0) == "45" and m.fmt(45.5) == "45.5"
+
+# 💸 הוצאות עסק: ספק לפי דומיין + נושא של קבלה; סכום לפי כללים
+assert m.business_vendor("noreply@tm.openai.com", "Your OpenAI API account has been funded")[0] == "OpenAI"
+assert m.business_vendor("noreply@tm.openai.com", "Your OpenAI API credit balance has $3.00 remaining") is None
+assert m.business_vendor("invoice+statements@mail.anthropic.com", "Your receipt from Anthropic, PBC #2195-1239-9910")[:2] == \
+    ("Anthropic", "מנוי Claude")
+assert m.business_vendor("billing@vercel.com", "Your Vercel invoice")[2] == "🎯 AMIRNET"
+assert m.business_vendor("billing@vercel.com", "Payment failed") is None
+assert m.business_vendor("shop@wolt.com", "Your receipt") is None  # לא ספק עסקי
+assert m.parse_amount("We charged $10.00 to your credit card ending in 3814") == (10.0, "$")
+assert m.parse_amount("Receipt from Anthropic, PBC $85.88 Paid on October 24 ... Max plan $100.00 ... Amount paid $85.88") == (85.88, "$")
+assert m.parse_amount("סה\"כ לתשלום ₪ 1,200.00") == (1200.0, "₪")
+assert m.parse_amount("no money here") is None
+
 print("ok")

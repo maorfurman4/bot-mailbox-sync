@@ -1,0 +1,27 @@
+name: בדיקה חיה — כסף → monday (ענף בדיקה בלבד)
+
+# רץ רק ב-push לענף test/money-monday. יימחק לפני המיזוג ל-main.
+on:
+  push:
+    branches: [test/money-monday]
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python test_mail.py
+      - run: python live_money.py
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          TELEGRAM_TOKEN_RECEIPTS: ${{ secrets.TELEGRAM_TOKEN_RECEIPTS }}
+          CHAT_ID_RECEIPTS: ${{ secrets.CHAT_ID_RECEIPTS }}
+          MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
