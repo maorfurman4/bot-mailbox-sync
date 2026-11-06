@@ -1,0 +1,32 @@
+name: Bill retest (temporary)
+# מחזיר את החשבונית של מנהרות הכרמל למצב "לא טופל" ומריץ את המנהל עם התיקון — חד פעמי, יימחק אחרי הבדיקה
+on:
+  push:
+    branches: [test/bill-pdf]
+    paths: [.github/workflows/bill_retest.yml]
+jobs:
+  retest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - run: pip install -q -r requirements.txt
+      - name: Run mail manager on the Carmel Tunnels bill again
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          TELEGRAM_TOKEN_RECEIPTS: ${{ secrets.TELEGRAM_TOKEN_RECEIPTS }}
+          CHAT_ID_RECEIPTS: ${{ secrets.CHAT_ID_RECEIPTS }}
+          MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
+        run: |
+          python - <<'PY'
+          import sync_script as m
+          gmail, _ = m.get_google_services()
+          done = m.label_id(gmail, m.DONE_LABEL)
+          gmail.users().messages().modify(userId="me", id="1a1ac42e196e94ff", body={"removeLabelIds": [done]}).execute()
+          print("unmarked Carmel Tunnels bill")
+          PY
+          python sync_script.py
