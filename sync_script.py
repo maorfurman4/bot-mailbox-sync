@@ -478,11 +478,28 @@ def organize(gmail, calendar):
 # ─── חשבונות וקבלות → בוט הקבלות ─────────────────────────────────────────────
 # =============================================================================
 BILL_PROMPT = """חלץ מהחשבון/קבלה (כולל טקסט מ-PDF). JSON בלבד, ואם חסר — "לא צוין":
+- amount: הסכום הכולל לתשלום כולל מע"מ (סה"כ / סה"כ כולל מע"מ), בדיוק כמו שכתוב בטקסט. לא בטוח — "לא צוין". אסור לנחש.
+- is_paid: true גם אם כתוב שהחיוב ייגבה אוטומטית (כרטיס אשראי, הוראת קבע, "לא לתשלום") — אין מה לשלם ידנית.
+- טקסט שחולץ מ-PDF בעברית מופיע לפעמים הפוך (מילים ומספרים בסדר הפוך).
 {{"merchant": "שם הספק", "amount": "רק המספר", "currency": "₪/$/€", "billing_period": "תקופה או תאריך",
 "due_date": "DD/MM/YYYY או לא צוין", "payment_link": "קישור תשלום כפי שמופיע בטקסט, או לא נמצא",
 "is_paid": true/false}}
 טקסט:
 {body}"""
+
+def bill_text(body: str) -> str:
+    """הטקסט ל-AI: ה-PDF (החשבונית עצמה) קודם — אחרת הוא נחתך אחרי 3000 התווים ונשאר רק "החשבונית מצורפת",
+    וה-AI ממציא סכום (מנהרות הכרמל, 11/2026: "96 ₪" במקום 24.16)."""
+    i = body.find("--- PDF")
+    return (body[i:] + " " + body[:i] if i > 0 else body)[:3000]
+
+def amount_in_text(amount, text: str) -> bool:
+    """הסכום שה-AI החזיר באמת כתוב בחשבונית (גם הפוך — עברית מ-PDF מתהפכת)."""
+    a = str(amount or "").replace(",", "").strip()
+    if not re.fullmatch(r"\d+(\.\d+)?", a):
+        return False
+    nums = [n.replace(",", "") for n in re.findall(r"\d[\d,]*(?:\.\d+)?", text)]
+    return any(n in (a, a[::-1]) or float(n) == float(a) for n in nums if re.fullmatch(r"\d+(\.\d+)?", n))
 
 def handle_bill(gmail, calendar, mail: dict) -> bool:
     """שולח לבוט הקבלות; מחזיר האם שולם (קבלה ששולמה יוצאת מהתיבה)."""
@@ -490,9 +507,12 @@ def handle_bill(gmail, calendar, mail: dict) -> bool:
     body = extract_body(gmail, mail["id"], full["payload"], mail["snippet"])
     if _matches(mail["sender"], ["splitwise.com"]):  # חשבונות הדירה — כללים, לא ה-AI הכללי (שם יצא "לא צוין — 135")
         return handle_splitwise(mail, body, mail_date(full))
-    bill = ask_ai(BILL_PROMPT.format(body=body[:3000]))  # הנתונים בחשבונית נמצאים בהתחלה
+    source = bill_text(body)
+    bill = ask_ai(BILL_PROMPT.format(body=source))
     is_paid = bool(bill.get("is_paid"))
     merchant, amount, currency = bill.get("merchant", "לא צוין"), bill.get("amount", "?"), bill.get("currency", "₪")
+    if not amount_in_text(amount, source):
+        amount = "לא צוין"  # סכום שלא כתוב בחשבונית — לא מעבירים הלאה (גם לא ליומן)
     due = parse_due(bill.get("due_date"))
 
     text = (f"{'✅' if is_paid else '💳'} <b>{'קבלה' if is_paid else 'חשבון לתשלום'}</b>\n\n"
@@ -588,8 +608,11 @@ def handle_expense(gmail, mail: dict, vendor: tuple) -> None:
     body = extract_body(gmail, mail["id"], full["payload"], mail["snippet"])
     found = parse_amount(f"{mail['snippet']} {body}")
     if not found:  # הכללים לא מצאו — AI כגיבוי
-        bill = ask_ai(BILL_PROMPT.format(body=body[:3000]))
+        source = bill_text(body)
+        bill = ask_ai(BILL_PROMPT.format(body=source))
         try:
+            if not amount_in_text(bill.get("amount"), source):
+                raise ValueError("amount not in the receipt")  # לא רושמים הוצאה עם סכום מומצא
             found = money(bill.get("amount")), "$" if "$" in str(bill.get("currency")) else "₪"
         except (TypeError, ValueError):
             fail(f"הוצאה בלי סכום: {mail['subject'][:40]}", "לא נמצא סכום")

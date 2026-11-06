@@ -172,4 +172,15 @@ assert m.parse_amount("Receipt from Anthropic, PBC $85.88 Paid on October 24 ...
 assert m.parse_amount("סה\"כ לתשלום ₪ 1,200.00") == (1200.0, "₪")
 assert m.parse_amount("no money here") is None
 
+# 🧾 חשבונית ב-PDF: ה-PDF עובר להתחלה (אחרת נחתך ב-3000 תווים — מנהרות הכרמל 11/2026); סכום שלא בטקסט — "לא צוין"
+mail_part = "החשבונית החודשית שלך מצורפת " + "(Link: https://nmall.printernet.co.il/x) " * 80
+body = mail_part + "\n--- PDF (a.pdf) --- סה\"כ כולל מע\"מ 24.16 לא לתשלום"
+src = m.bill_text(body)
+assert src.startswith("--- PDF") and "24.16" in src and len(src) <= 3000
+assert m.bill_text("רק מייל, בלי PDF") == "רק מייל, בלי PDF"
+assert m.amount_in_text("24.16", src)
+assert m.amount_in_text("24.16", "סהכ 61.42")  # עברית מ-PDF מתהפכת — גם המספר
+assert not m.amount_in_text("96", src) and not m.amount_in_text("לא צוין", src)
+assert m.amount_in_text("96", "סכום 96.00 ₪")
+
 print("ok")
