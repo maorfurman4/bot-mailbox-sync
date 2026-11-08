@@ -9,6 +9,7 @@
 DRY_RUN=1: רק מדפיס החלטות. ORGANIZE_ALL=1: מסדר גם את כל המיילים הישנים בתיבה (בלי טלגרם/יומן).
 """
 import base64
+import hashlib
 import html
 import io
 import json
@@ -68,6 +69,7 @@ CHAT_ID = os.environ.get("CHAT_ID", "").strip()
 TELEGRAM_TOKEN_RECEIPTS = os.environ.get("TELEGRAM_TOKEN_RECEIPTS", "").strip()
 CHAT_ID_RECEIPTS = os.environ.get("CHAT_ID_RECEIPTS", "").strip()
 MONDAY_API_TOKEN = os.environ.get("MONDAY_API_TOKEN", "").strip()
+FINANCE_BOT_TOKEN = os.environ.get("FINANCE_BOT_TOKEN", "").strip()  # בוט הכספים — חיובים מהמייל
 
 FAILURES = []
 
@@ -501,6 +503,51 @@ def amount_in_text(amount, text: str) -> bool:
     nums = [n.replace(",", "") for n in re.findall(r"\d[\d,]*(?:\.\d+)?", text)]
     return any(n in (a, a[::-1]) or float(n) == float(a) for n in nums if re.fullmatch(r"\d+(\.\d+)?", n))
 
+# הסכום הכולל — לפי כללים, לפני ה-AI (8.11: 10bis — ה-AI לקח "11" מהכתובת "קומה 11" במקום 2.0).
+# PyPDF2 הופך עברית בחלק מה-PDF-ים: 'םולשתל כ"הס 2.0' — לכן מחפשים כל תווית גם הפוכה; המספרים נשארים בסדר.
+TOTAL_LABELS = [  # לפי עדיפות: "לתשלום" > "בש"ח / כולל מע"מ / amount paid" > "סה"כ" לבד (אחרון: אצל 10bis זה לפני מע"מ)
+    ('סה"כ לתשלום', "לתשלום", "total due", "amount due"),
+    ('סה"כ בש"ח', 'כולל מע"מ', 'סה"כ ils', "amount paid", "total paid", "grand total", "charged"),
+    ('סה"כ', "total"),
+]
+NUM_RE = re.compile(r"(?<![\d.,])\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?(?![\d%])|(?<![\d.,])\d+(?:\.\d{1,2})?(?![\d%])")
+DATE_RE = re.compile(r"(?<!\d)(\d{1,2})[./](\d{1,2})[./](20\d\d)(?!\d)")
+
+def _label_at(label: str, line: str) -> int:
+    """איפה התווית נגמרת בשורה (גם הפוכה); -1 — לא שם."""
+    if label == "total":  # מילה שלמה — לא subtotal
+        m = re.search(r"(?<![a-z])total(?![a-z])", line)
+        return m.end() if m else -1
+    for form in (label, label[::-1]):
+        if form in line:
+            return line.index(form) + len(form)
+    return -1
+
+def total_amount(text: str):
+    """(סכום, מטבע): המספר הראשון אחרי תווית הסכום הכולל (אין — האחרון לפניה, ואז השורה הבאה); None — לא נמצא."""
+    lines = (text or "").replace("״", '"').replace("׳", "'").lower().splitlines()
+    nums = lambda t: [n for n in NUM_RE.findall(t) if float(n.replace(",", "")) > 0]  # noqa: E731
+    for labels in TOTAL_LABELS:
+        for i, line in enumerate(lines):
+            at = max(_label_at(label, line) for label in labels)
+            if at < 0:
+                continue
+            after, before = nums(line[at:]), nums(line[:at])
+            nxt = nums(lines[i + 1]) if i + 1 < len(lines) else []
+            pick = after[0] if after else before[-1] if before else nxt[0] if nxt else None
+            if pick:
+                return money(pick), "$" if "$" in line or "usd" in line else "₪"
+    return None
+
+def issue_date(text: str):
+    """התאריך הראשון בחשבונית (06.11.2026 / 07/11/2026) — לא "05/30" של תוקף הכרטיס."""
+    for d, m, y in DATE_RE.findall(text or ""):
+        try:
+            return datetime(int(y), int(m), int(d)).date()
+        except ValueError:
+            continue
+    return None
+
 def handle_bill(gmail, calendar, mail: dict) -> bool:
     """שולח לבוט הקבלות; מחזיר האם שולם (קבלה ששולמה יוצאת מהתיבה)."""
     full = gmail.users().messages().get(userId="me", id=mail["id"], format="full").execute()
@@ -511,8 +558,14 @@ def handle_bill(gmail, calendar, mail: dict) -> bool:
     bill = ask_ai(BILL_PROMPT.format(body=source))
     is_paid = bool(bill.get("is_paid"))
     merchant, amount, currency = bill.get("merchant", "לא צוין"), bill.get("amount", "?"), bill.get("currency", "₪")
-    if not amount_in_text(amount, source):
+    found = total_amount(f"{mail['snippet']}\n{source}")
+    if found:  # הכלל קודם ל-AI
+        amount, currency = (f"{found[0]:.2f}" if found[0] != int(found[0]) else str(int(found[0]))), found[1]
+    elif not amount_in_text(amount, source):
         amount = "לא צוין"  # סכום שלא כתוב בחשבונית — לא מעבירים הלאה (גם לא ליומן)
+    issued = issue_date(source)
+    if str(bill.get("billing_period", "לא צוין")).strip() in ("", "לא צוין") and issued:
+        bill["billing_period"] = f"{issued:%d/%m/%Y}"
     due = parse_due(bill.get("due_date"))
 
     text = (f"{'✅' if is_paid else '💳'} <b>{'קבלה' if is_paid else 'חשבון לתשלום'}</b>\n\n"
@@ -527,6 +580,10 @@ def handle_bill(gmail, calendar, mail: dict) -> bool:
     act(f"receipt → telegram: {merchant} {amount}", telegram, TELEGRAM_TOKEN_RECEIPTS, CHAT_ID_RECEIPTS, text, buttons)
     for name, data in pdf_attachments(gmail, mail["id"], full["payload"]):
         act(f"pdf → telegram: {name}", telegram_file, TELEGRAM_TOKEN_RECEIPTS, CHAT_ID_RECEIPTS, name, data)
+    # קבלה ששולמה → בוט הכספים (הצעה ✅/✖️). הוצאת עסק — כבר נשלחה ב-handle_expense
+    if is_paid and found and not business_vendor(mail["sender"], mail["subject"]):
+        ils = round(found[0] * rules.USD_TO_ILS, 2) if found[1] == "$" else found[0]
+        to_finance(vendor_label(mail["sender"], str(merchant)), ils, issued or mail_date(full), False, mail["id"])
 
     if not is_paid and due:  # חשבון פתוח → יומן ביום האחרון לתשלום (דבי מציג אותו בתדריך)
         exists = calendar.events().list(calendarId="primary", privateExtendedProperty=f"mailbot={mail['id']}").execute()
@@ -606,7 +663,7 @@ def handle_expense(gmail, mail: dict, vendor: tuple) -> None:
     name_vendor, what, project = vendor
     full = gmail.users().messages().get(userId="me", id=mail["id"], format="full").execute()
     body = extract_body(gmail, mail["id"], full["payload"], mail["snippet"])
-    found = parse_amount(f"{mail['snippet']} {body}")
+    found = total_amount(f"{mail['snippet']}\n{body}") or parse_amount(f"{mail['snippet']} {body}")
     if not found:  # הכללים לא מצאו — AI כגיבוי
         source = bill_text(body)
         bill = ask_ai(BILL_PROMPT.format(body=source))
@@ -618,13 +675,27 @@ def handle_expense(gmail, mail: dict, vendor: tuple) -> None:
             fail(f"הוצאה בלי סכום: {mail['subject'][:40]}", "לא נמצא סכום")
             return
     amount, currency = found
-    ils = round(amount * rules.USD_TO_ILS) if currency == "$" else round(amount)
-    notes = [gmail_link(mail["id"]), f"${fmt(amount)} לפי שער קבוע {rules.USD_TO_ILS}" if currency == "$" else ""]
-    if project:
-        notes.append(f"פרויקט: {project}")
-    monday_add("עסקים", "הכנסות והוצאות", f"{name_vendor} — {what}", mail["id"], {
-        "סוג": {"label": "הוצאה"}, "סטטוס": {"label": "בוצע"}, "סכום (₪)": str(ils),
-        "דדליין": {"date": mail_date(full).isoformat()}, "הערות": {"text": "\n".join(filter(None, notes))}})
+    ils = round(amount * rules.USD_TO_ILS, 2) if currency == "$" else amount
+    # 8.11: הוצאות עסק עוברות לבוט הכספים ("הוצאות עסקיות" באפליקציה) — לא עוד פריט "הוצאה" בלוח העסקים
+    to_finance(f"{name_vendor} — {what}", ils, mail_date(full), True, mail["id"])
+
+FINANCE_URL = "https://bot-finance-mu.vercel.app/api/webhook?ingest"
+VENDOR_PREFIX = {"wolt.com": "וולט", "10bis.co.il": "תן ביס"}  # "וולט · פאפי פסטה" — כדי שבוט הכספים יזהה קטגוריה
+
+def vendor_label(sender: str, merchant: str) -> str:
+    prefix = next((p for d, p in VENDOR_PREFIX.items() if _matches(sender, [d])), None)
+    return f"{prefix} · {merchant}" if prefix and prefix not in merchant else merchant
+
+def to_finance(vendor: str, ils: float, day, business: bool, mail_id: str) -> None:
+    """חיוב → בוט הכספים. הסוד נגזר מהטוקן שלו (FINANCE_BOT_TOKEN). בלוג — בלי ספק/סכום (ה-repo ציבורי)."""
+    if not FINANCE_BOT_TOKEN:
+        return
+    secret = hashlib.sha256(b"ingest:" + FINANCE_BOT_TOKEN.encode()).hexdigest()[:32]
+    resp = act("charge → finance bot", requests.post, FINANCE_URL, timeout=30, headers={"X-Ingest-Secret": secret},
+               json={"vendor": vendor, "amount": ils, "date": day.isoformat(), "business": business,
+                     "link": gmail_link(mail_id)})
+    if resp is not None and not resp.ok:
+        fail("finance bot", f"HTTP {resp.status_code}")
 
 def monday_gql(query: str, **variables) -> dict:
     resp = requests.post("https://api.monday.com/v2", json={"query": query, "variables": variables}, timeout=30,
