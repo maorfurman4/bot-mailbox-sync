@@ -183,4 +183,41 @@ assert m.amount_in_text("24.16", "סהכ 61.42")  # עברית מ-PDF מתהפכ
 assert not m.amount_in_text("96", src) and not m.amount_in_text("לא צוין", src)
 assert m.amount_in_text("96", "סכום 96.00 ₪")
 
+
+from datetime import date  # noqa: E402
+
+# ── הסכום הכולל לפי כללים (8.11: 10bis — ה-AI לקח "11" מ"קומה 11"); שורות אמיתיות מ-PyPDF2, בלי פרטים אישיים ──
+tenbis = "\n".join(["ןיגב םחנמ ךרד  146 המוק ןואט ילאירזע ,ביבא לת  11 .  דוקימ  6492103",  # הכתובת — לא הסכום
+                    'רואית תומכ ריחמ הס "כ', "יצרא ללכ - לסרפוש הדעסממ הנמזה רובע םולשת 1 2.0",
+                    'כ"הס 1.69', 'מ"עמ 0.31', 'םולשתל כ"הס 2.0', ":הגופת ךיראת  05/30"])
+assert m.total_amount(tenbis) == (2.0, "₪")  # 'סה"כ לתשלום' הפוך — לא 1.69 (לפני מע"מ), לא 11
+wolt = "\n".join(["Apple Pay  75.60", "דמי תפעול 18% 1  3.60  3.60", '(סה"כ בש"ח )כולל מע״מ  75.60',
+                   'סך נטומע"מ סה"כ', '18% מע"מ  64.07  11.53  75.60', 'ש"ח  16.00  :Wolt+ סך החסכון'])
+assert m.total_amount(wolt) == (75.6, "₪")
+pappi = '(סה"כ בש"ח )כולל מע״מ  65.10\n18% מע"מ  55.17  9.93  65.102 / 2ש"ח  16.00  :Wolt+ סך החסכון'
+assert m.total_amount(pappi) == (65.1, "₪")
+assert m.total_amount('סה"כ ILS 75.60 75.60 מסמכי ההזמנה') == (75.6, "₪")  # תקציר המייל של Wolt
+assert m.total_amount("Amount paid $85.88 ... Subtotal $100.00") == (85.88, "$")
+assert m.total_amount("Subtotal 50.00") is None and m.total_amount("") is None
+assert m.issue_date("תאריך הפקה 20:56  06.11.2026") == date(2026, 11, 6)
+assert m.issue_date(":ךיראת  07/11/2026 :העש  07:53:04\n:הגופת ךיראת  05/30") == date(2026, 11, 7)
+assert m.issue_date("05/30 only") is None
+# → בוט הכספים: "וולט · פאפי פסטה"; סוד נגזר מהטוקן; בלי טוקן — כלום
+assert m.vendor_label("info@wolt.com", "פאפי פסטה") == "וולט · פאפי פסטה"
+assert m.vendor_label("service@10bis.co.il", "תן ביס") == "תן ביס" and m.vendor_label("a@b.com", "X") == "X"
+posts = []
+_req, _act, _tok = m.requests.post, m.act, m.FINANCE_BOT_TOKEN
+m.act = lambda desc, fn, *a, **k: fn(*a, **k)
+m.requests.post = lambda url, **k: posts.append((url, k)) or type("R", (), {"ok": True, "status_code": 200})()
+m.FINANCE_BOT_TOKEN = ""
+m.to_finance("X", 10, date(2026, 11, 6), False, "id1")
+assert not posts
+m.FINANCE_BOT_TOKEN = "tok"
+m.to_finance("וולט · פאפי פסטה", 65.1, date(2026, 11, 6), False, "id1")
+url, k = posts[-1]
+import hashlib  # noqa: E402
+assert url.endswith("?ingest") and k["headers"]["X-Ingest-Secret"] == hashlib.sha256(b"ingest:tok").hexdigest()[:32]
+assert k["json"] == {"vendor": "וולט · פאפי פסטה", "amount": 65.1, "date": "2026-11-06", "business": False,
+                     "link": m.gmail_link("id1")}
+m.requests.post, m.act, m.FINANCE_BOT_TOKEN = _req, _act, _tok
 print("ok")
