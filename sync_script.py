@@ -394,6 +394,8 @@ def apply_labels(gmail, calendar, mails, stats, unsubscribed, *, move: bool, not
                 handle_expense(gmail, mail, vendor)  # בנוסף למיון הרגיל (Vercel/Render הם "פיתוח")
             if action == "bill" and notify:
                 paid = handle_bill(gmail, calendar, mail)
+            elif notify and is_order(mail["sender"], mail["subject"]):
+                handle_order(gmail, mail)  # בנוסף למיון הרגיל (נשאר ב-✈️ הזמנות)
             name, in_inbox = placement(action, paid=paid, address=mail["sender"])
             add, remove = inbox_change(in_inbox, mail["labels"], move)
             body = {"addLabelIds": [label_id(gmail, name, PLACES[action][2]), done_id] + ([add] if add else [])}
@@ -536,7 +538,8 @@ def total_amount(text: str):
             nxt = nums(lines[i + 1]) if i + 1 < len(lines) else []
             pick = after[0] if after else before[-1] if before else nxt[0] if nxt else None
             if pick:
-                return money(pick), "$" if "$" in line or "usd" in line else "₪"
+                where = line if after or before else f"{line} {lines[i + 1]}"  # "Grand Total:\n$45.00"
+                return money(pick), "$" if "$" in where or "usd" in where else "₪"
     return None
 
 def issue_date(text: str):
@@ -678,6 +681,50 @@ def handle_expense(gmail, mail: dict, vendor: tuple) -> None:
     ils = round(amount * rules.USD_TO_ILS, 2) if currency == "$" else amount
     # 8.11: הוצאות עסק עוברות לבוט הכספים ("הוצאות עסקיות" באפליקציה) — לא עוד פריט "הוצאה" בלוח העסקים
     to_finance(f"{name_vendor} — {what}", ils, mail_date(full), True, mail["id"])
+
+# 🛒 הזמנה בחנות אונליין עם סכום → בוט הכספים (הצעה ✅/✖️, "קניות אונליין")
+def is_order(address: str, subject: str) -> bool:
+    return bool(re.search(rules.ORDER_SUBJECT, subject or "", re.I)) \
+        and not re.search(rules.NOT_ORDER_SUBJECT, subject or "", re.I) \
+        and not _matches(address, rules.KNOWN["orders"]) and not business_vendor(address, subject)
+
+def order_number(text: str):
+    m = re.search(rules.ORDER_NUMBER, text or "", re.I)
+    return m[1] if m else None
+
+def shop_name(from_header: str, address: str) -> str:
+    """"Amazon.com <auto-confirm@amazon.com>" → "Amazon"; בלי שם — הדומיין."""
+    name = re.sub(r"\s*<.*", "", from_header or "").strip().strip('"') or address.split("@")[-1]
+    return re.sub(r"\.(com|co\.il|net)$", "", name, flags=re.I)
+
+SEEN_ORDERS = set()
+
+def order_seen(gmail, order: str, mail_id: str, internal: int) -> bool:
+    """אישור הזמנה קודם עם אותו מספר (ריצה קודמת) — כבר הוצע. מיילי משלוח עם המספר לא נחשבים (לפי הנושא)."""
+    for msg in fetch(gmail, f'"{order}" label:{DONE_LABEL}', 10):
+        if msg["id"] == mail_id:
+            continue
+        other = gmail.users().messages().get(userId="me", id=msg["id"], format="metadata", metadataHeaders=["From", "Subject"]).execute()
+        h = {x["name"]: x["value"] for x in other.get("payload", {}).get("headers", [])}
+        if is_order(sender_of(h.get("From", "")), h.get("Subject", "")) and int(other.get("internalDate", 0)) < internal:
+            return True
+    return False
+
+def handle_order(gmail, mail: dict) -> bool:
+    """מחזיר אם הוצע. בלי סכום כולל במייל — לא הזמנה שאפשר לרשום."""
+    full = gmail.users().messages().get(userId="me", id=mail["id"], format="full").execute()
+    body = extract_body(gmail, mail["id"], full["payload"], mail["snippet"])
+    found = total_amount(f"{mail['snippet']}\n{body}")
+    if not found:
+        return False
+    order = order_number(body)
+    if order and (order in SEEN_ORDERS or order_seen(gmail, order, mail["id"], int(full.get("internalDate", 0)))):
+        print("💤 order already offered")  # בלי מספר/ספק בלוג — ה-repo ציבורי
+        return False
+    SEEN_ORDERS.add(order)
+    ils = round(found[0] * rules.USD_TO_ILS, 2) if found[1] == "$" else found[0]
+    to_finance(f"{shop_name(mail['from'], mail['sender'])} · הזמנה אונליין", ils, mail_date(full), False, mail["id"])
+    return True
 
 FINANCE_URL = "https://bot-finance-mu.vercel.app/api/webhook?ingest"
 VENDOR_PREFIX = {"wolt.com": "וולט", "10bis.co.il": "תן ביס"}  # "וולט · פאפי פסטה" — כדי שבוט הכספים יזהה קטגוריה

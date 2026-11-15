@@ -220,4 +220,58 @@ assert url.endswith("?ingest") and k["headers"]["X-Ingest-Secret"] == hashlib.sh
 assert k["json"] == {"vendor": "וולט · פאפי פסטה", "amount": 65.1, "date": "2026-11-06", "business": False,
                      "link": m.gmail_link("id1")}
 m.requests.post, m.act, m.FINANCE_BOT_TOKEN = _req, _act, _tok
+
+# 🛒 אישור הזמנה באמזון (12.11) — אותו מבנה כמו המייל, בלי פרטים אישיים (מספר הזמנה, סכום וכתובת בדויים)
+amazon = "\n".join(["Your Orders", "", "    thanks for your order!", "Ordered", "", "Shipped", "", "Out for delivery", "",
+                     "Delivered", "", "Arriving November 24", "", "Order #", "111-0000000-0000001", "",
+                     "View or edit order", "https://www.amazon.com/your-orders/order-details?orderID=111-0000000-0000001",
+                     "", "Grand Total:", "123.45 ILS", "", "(866) 216-1075 410 Terry Avenue N., Seattle, WA 98109"])
+amazon_subject = "Ordered 3 items: Electronics, Kitchen & Dining"
+assert m.total_amount(amazon) == (123.45, "₪")  # "Grand Total:" ושורה אחריה — לא 866/410
+assert m.total_amount("Grand Total:\n$45.00") == (45.0, "$")  # המטבע בשורה של המספר
+assert m.order_number(amazon) == "111-0000000-0000001"
+assert m.order_number("אישור הזמנה מספר: 778899") == "778899" and m.order_number("no order here") is None
+assert m.is_order("auto-confirm@amazon.com", amazon_subject)
+assert m.is_order("shop@ksp.co.il", "אישור הזמנה מספר 778899")
+for subject in ("Shipped: Your Amazon order", "Out for delivery: 3 items", "Delivered: Your package", "Your refund",
+                "Your order has been cancelled", "הזמנתך נשלחה"):
+    assert not m.is_order("shipment-tracking@amazon.com", subject), subject
+assert not m.is_order("noreply@elal.co.il", "Your order confirmation")  # טיסות — ✈️ בלי הצעה
+assert not m.is_order("a@b.com", "Your flight booking — order confirmation")
+assert not m.is_order("billing@vercel.com", "Your order receipt")  # הוצאת עסק — כבר נשלחת לחוד
+assert m.shop_name("Amazon.com <auto-confirm@amazon.com>", "auto-confirm@amazon.com") == "Amazon"
+assert m.shop_name("", "orders@ksp.co.il") == "ksp"
+
+class FakeGmail:  # users().messages().get(...).execute() / list(...).execute()
+    def __init__(self, full, done=()):
+        self.full, self.done = full, list(done)
+    def users(self): return self
+    def messages(self): return self
+    def get(self, userId, id, **k):
+        return type("X", (), {"execute": lambda _s: self.full if id == "new" else next(d for d in self.done if d["id"] == id)})()
+    def list(self, **k):
+        return type("X", (), {"execute": lambda _s: {"messages": [{"id": d["id"]} for d in self.done]}})()
+
+sent = []
+_tf, _eb = m.to_finance, m.extract_body
+m.to_finance = lambda *a: sent.append(a)
+m.extract_body = lambda gmail, msg_id, payload, snippet="": amazon
+mail = {"id": "new", "from": "Amazon.com <auto-confirm@amazon.com>", "sender": "auto-confirm@amazon.com",
+        "subject": amazon_subject, "snippet": amazon_subject}
+full = {"payload": {}, "internalDate": "1794493421000"}
+assert m.handle_order(FakeGmail(full), mail)
+assert sent[-1][:4] == ("Amazon · הזמנה אונליין", 123.45, date(2026, 11, 12), False)
+assert not m.handle_order(FakeGmail(full), mail)  # אותו מספר הזמנה באותה ריצה — לא פעמיים
+m.SEEN_ORDERS.clear()
+older = {"id": "old", "internalDate": "1794400000000",
+         "payload": {"headers": [{"name": "From", "value": "auto-confirm@amazon.com"}, {"name": "Subject", "value": amazon_subject}]}}
+shipped = {**older, "payload": {"headers": [{"name": "From", "value": "shipment-tracking@amazon.com"},
+                                            {"name": "Subject", "value": "Shipped: 3 items"}]}}
+assert not m.handle_order(FakeGmail(full, [older]), mail)  # אישור קודם (ריצה קודמת) עם אותו מספר
+assert m.handle_order(FakeGmail(full, [shipped]), mail)  # מייל משלוח עם המספר — לא נחשב הצעה קודמת
+m.SEEN_ORDERS.clear()
+m.extract_body = lambda *a, **k: "Order # 111-0000000-0000002 thanks"  # בלי סכום — אין הצעה
+assert not m.handle_order(FakeGmail(full), mail)
+m.to_finance, m.extract_body = _tf, _eb
+m.SEEN_ORDERS.clear()
 print("ok")

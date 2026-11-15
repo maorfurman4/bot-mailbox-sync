@@ -1,0 +1,28 @@
+name: backfill 2 Amazon orders (temporary — removed before merge)
+on:
+  push:
+    branches: [test/online-orders]
+    paths: [.github/workflows/backfill-orders.yml]
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install -q -r requirements.txt
+      - name: offer the 11.11 and 12.11 orders once (counts only in the log — public repo)
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          FINANCE_BOT_TOKEN: ${{ secrets.FINANCE_BOT_TOKEN }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: |
+          python - <<'PY'
+          import sync_script as m
+          gmail, _ = m.get_google_services()
+          for msg_id in ("1a1cc9bea35f631c", "1a1d024964ab6812"):
+              mail = m.metadata(gmail, msg_id)
+              print("is_order:", m.is_order(mail["sender"], mail["subject"]), "offered:", m.handle_order(gmail, mail))
+          print("failures:", len(m.FAILURES))
+          PY

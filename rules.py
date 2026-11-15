@@ -77,3 +77,12 @@ USD_TO_ILS = 3.7  # שער קבוע לתקציב; הסכום המקורי בדו
 
 # 🏠 Splitwise (קבוצת הדירה): מי הוסיף את ההוצאה → למי משלמים
 SPLITWISE_PAYEES = {"Maxim": "מקסים"}
+
+# 🛒 אישור הזמנה בחנות אונליין (15.11: אמזון "Ordered 3 items: ..." נכנס ל-✈️ ולא הגיע לבוט הכספים).
+# רק לפי הנושא: בגוף של אמזון יש תמיד "Shipped / Out for delivery / Delivered" (פס ההתקדמות)
+ORDER_SUBJECT = (r"\bordered\b|order confirm|order received|your order|thanks for your order|thank you for your order|"
+                 r"אישור הזמנה|הזמנתך|ההזמנה שלך|הזמנה מס|הזמנה התקבלה|הזמנה חדשה")
+# משלוח/ביטול/החזר — אותה הזמנה, לא רכישה נוספת; טיסות והזמנות מקום — נשארות ב-✈️ בלי הצעה
+NOT_ORDER_SUBJECT = (r"ship|deliver|arriv|dispatch|on the way|out for|cancel|refund|return|review|rate |feedback|"
+                     r"flight|booking|hotel|reservation|נשלח|נמסר|בדרך|משלוח|בוטל|ביטול|החזר|דרג|חוות דעת|טיסה|מלון|כרטיס")
+ORDER_NUMBER = r"(?:order\s*(?:#|number|no\.?)|הזמנה\s*(?:מס['׳]?|#|מספר))\s*:?\s*([A-Z0-9][A-Z0-9-]{4,})"
