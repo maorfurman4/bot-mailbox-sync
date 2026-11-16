@@ -56,4 +56,5 @@ jobs:
           CHAT_ID_RECEIPTS: ${{ secrets.CHAT_ID_RECEIPTS }}
           MONDAY_API_TOKEN: ${{ secrets.MONDAY_API_TOKEN }}
           FINANCE_BOT_TOKEN: ${{ secrets.FINANCE_BOT_TOKEN }}
+          MAIL_INGEST_SECRET: ${{ secrets.MAIL_INGEST_SECRET }}  # 📣 → יהלי (אותו ערך גם ב-bot-task-calendar)
         run: python sync_script.py
