@@ -25,6 +25,7 @@ from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
+import important
 import rules
 
 try:
@@ -72,6 +73,8 @@ MONDAY_API_TOKEN = os.environ.get("MONDAY_API_TOKEN", "").strip()
 FINANCE_BOT_TOKEN = os.environ.get("FINANCE_BOT_TOKEN", "").strip()  # בוט הכספים — חיובים מהמייל
 
 FAILURES = []
+PREFS = important.load_prefs()  # 👍/👎/🚫 ו"אפקה חשוב" — יהלי כותבת ל-prefs.json
+IMPORTANT = []  # מועמדים ל-📣 בריצה הזו
 
 def fail(section: str, ex) -> None:
     print(f"❌ {section}: {ex}")
@@ -94,8 +97,8 @@ def _matches(address: str, entries: list) -> bool:
     domain = address.rsplit("@", 1)[-1]
     return any(address == e or domain == e or domain.endswith("." + e) for e in entries)
 
-def is_blocked(address: str) -> bool:
-    return _matches(address, rules.BLOCK)
+def is_blocked(address: str, from_header: str = "") -> bool:
+    return _matches(address, rules.BLOCK) or important.pref_of(PREFS, address, from_header) == "block"
 
 def is_protected(address: str, subject: str) -> bool:
     return _matches(address, rules.PROTECT) or bool(re.search(rules.PROTECT_SUBJECT, subject or "", re.I))
@@ -335,7 +338,8 @@ def fetch(gmail, query: str, limit: int, label_ids: list | None = None) -> list:
 def metadata(gmail, msg_id: str) -> dict:
     full = gmail.users().messages().get(
         userId="me", id=msg_id, format="metadata",
-        metadataHeaders=["From", "Subject", "List-Unsubscribe", "List-Unsubscribe-Post"]).execute()
+        metadataHeaders=["From", "Subject", "List-Unsubscribe", "List-Unsubscribe-Post", "To", "Cc", "Precedence",
+                         "List-Id"]).execute()
     headers = {h["name"]: h["value"] for h in full.get("payload", {}).get("headers", [])}
     return {"id": msg_id, "headers": headers, "from": headers.get("From", ""), "sender": sender_of(headers.get("From", "")),
             "subject": headers.get("Subject", "(ללא נושא)"), "snippet": html.unescape(full.get("snippet", "")),
@@ -392,6 +396,9 @@ def apply_labels(gmail, calendar, mails, stats, unsubscribed, *, move: bool, not
             paid = True
             if notify and (vendor := business_vendor(mail["sender"], mail["subject"])):
                 handle_expense(gmail, mail, vendor)  # בנוסף למיון הרגיל (Vercel/Render הם "פיתוח")
+            if notify and action not in ("junk", "block") and (
+                    action == "important" or important.pref_of(PREFS, mail["sender"], mail["from"]) == "important"):
+                IMPORTANT.append(mail)  # 📣 — נבדק בסוף הריצה (אישי? AI? מכסה)
             if action == "bill" and notify:
                 paid = handle_bill(gmail, calendar, mail)
             elif notify and is_order(mail["sender"], mail["subject"]):
@@ -429,8 +436,9 @@ def organize(gmail, calendar):
     if MERGE:
         merge_old_labels(gmail, calendar, stats, unsubscribed)
 
-    # 1) שולחים חסומים — כל מה שבתיבה, גם ישן
-    for msg in fetch(gmail, "in:inbox from:(" + " OR ".join(rules.BLOCK) + ")", 500):
+    # 1) שולחים חסומים — כל מה שבתיבה, גם ישן (כולל 🚫 מיהלי ב-prefs.json)
+    blocked = rules.BLOCK + [e for e in PREFS["block"] if not e.startswith("word:")]
+    for msg in fetch(gmail, "in:inbox from:(" + " OR ".join(blocked) + ")", 500):
         mail = metadata(gmail, msg["id"])
         # החיפוש של Gmail רחב יותר מהכלל, והתראות אבטחה עוברות חסימה — לכן decide
         if decide(mail["sender"], mail["subject"], "junk") == "block":
@@ -443,6 +451,11 @@ def organize(gmail, calendar):
     mails = [m for m in (metadata(gmail, msg["id"]) for msg in fetch(gmail, query, 1000 if ORGANIZE_ALL else 100))
              if "DRAFT" not in m["labels"]]
     apply_labels(gmail, calendar, mails, stats, unsubscribed, move=not ORGANIZE_ALL, notify=not ORGANIZE_ALL)
+    if not ORGANIZE_ALL:
+        try:
+            stats["important_sent"] = send_important(gmail, IMPORTANT)
+        except Exception as ex:
+            fail("מיילים חשובים → יהלי", ex)
 
     # TIDY_INBOX (חד-פעמי): כל מה שבתיבה — גם מה שכבר סומן — מקבל תווית ועובר למקום שלו. בלי טלגרם/יומן
     if TIDY_INBOX:
@@ -725,6 +738,48 @@ def handle_order(gmail, mail: dict) -> bool:
     ils = round(found[0] * rules.USD_TO_ILS, 2) if found[1] == "$" else found[0]
     to_finance(f"{shop_name(mail['from'], mail['sender'])} · הזמנה אונליין", ils, mail_date(full), False, mail["id"])
     return True
+
+def send_important(gmail, mails: list) -> int:
+    """📣 → יהלי (שם הכפתורים). קפדני: אישי + AI אומר שצריך לעשות משהו; 👍 שולח — תמיד; 👎 / 🚫 — לעולם לא.
+    עד 3 ביום (לפי התווית); השאר — הודעה אחת מקובצת. בלוג — רק מספרים."""
+    if not mails:
+        return 0
+    if not important.ingest_secret():
+        fail("מיילים חשובים → יהלי", "חסר הסוד MAIL_INGEST_SECRET")
+        return 0
+    me = gmail.users().getProfile(userId="me").execute().get("emailAddress", "")
+    today = datetime.now().date()
+    picked = []
+    for mail in mails:
+        pref = important.pref_of(PREFS, mail["sender"], mail["from"])
+        if pref in ("not_important", "block") or (pref != "important" and not important.is_personal(mail, me)):
+            continue
+        full = gmail.users().messages().get(userId="me", id=mail["id"], format="full").execute()
+        body = extract_body(gmail, mail["id"], full["payload"], mail["snippet"])
+        verdict = important.judge(ask_ai, mail, body, today) if OPENAI_API_KEY else None
+        if verdict is None and pref == "important":  # 👍 על השולח — שולחים גם כשה-AI לא בטוח
+            verdict = {"summary": mail["subject"][:160], "todo": None, "deadline": None, "event": None}
+        if verdict:
+            picked.append({**verdict, "id": mail["id"], "from_name": important.from_name(mail["from"], mail["sender"]),
+                           "sender": mail["sender"], "subject": mail["subject"][:200], "link": gmail_link(mail["id"])})
+    if not picked:
+        print(f"📣 important: 0 of {len(mails)} candidates")
+        return 0
+    sent_label = label_id(gmail, important.SENT_LABEL_HE)
+    sent_today = 0 if sent_label.startswith("<") else len(fetch(gmail, f"after:{today:%Y/%m/%d}", 50, [sent_label]))
+    single, rest = important.split_daily(picked, sent_today)
+    strip = lambda items: [{k: v for k, v in i.items() if k != "id"} for i in items]  # noqa: E731
+    resp = act(f"important → yahli: {len(single)} + {len(rest)} combined", requests.post, important.YAHLI_URL, timeout=30,
+               headers={"X-Ingest-Secret": important.ingest_secret()},
+               json={"items": strip(single), "combined": strip(rest)})
+    if resp is not None and not resp.ok:
+        fail("מיילים חשובים → יהלי", f"HTTP {resp.status_code}")
+        return 0
+    for item in single + rest:
+        act("label → sent to yahli", gmail.users().messages().modify(
+            userId="me", id=item["id"], body={"addLabelIds": [sent_label]}).execute)
+    print(f"📣 important: {len(single)} sent, {len(rest)} combined, of {len(mails)} candidates")
+    return len(single) + len(rest)
 
 FINANCE_URL = "https://bot-finance-mu.vercel.app/api/webhook?ingest"
 VENDOR_PREFIX = {"wolt.com": "וולט", "10bis.co.il": "תן ביס"}  # "וולט · פאפי פסטה" — כדי שבוט הכספים יזהה קטגוריה
