@@ -27,6 +27,7 @@ from googleapiclient.discovery import build
 
 import important
 import rules
+import subs
 
 try:
     import PyPDF2
@@ -400,6 +401,8 @@ def apply_labels(gmail, calendar, mails, stats, unsubscribed, *, move: bool, not
                     action == "important" or important.pref_of(PREFS, mail["sender"], mail["from"]) == "important"
                     or important.MOVE_SUBJECT.search(mail["subject"] or "")):  # 🔁 מועד שזז — גם מייל לכל הקורס
                 IMPORTANT.append(mail)  # 📣 — נבדק בסוף הריצה (אישי? AI? מכסה)
+            if notify and action not in ("junk", "block", "bill") and (kind := subs.kind_of(mail["subject"])):
+                handle_subscription(gmail, mail, kind)  # 💳 מנוי חדש / ⏳ ניסיון / 📈 מחיר → בוט הכספים
             if action == "bill" and notify:
                 paid = handle_bill(gmail, calendar, mail)
             elif notify and is_order(mail["sender"], mail["subject"]):
@@ -787,6 +790,23 @@ def send_important(gmail, mails: list) -> int:
     print(f"📣 important: {len(single)} sent, {len(rest)} combined, {len(moves)} date moves, of {len(mails)} candidates")
     return len(single) + len(rest)
 
+def handle_subscription(gmail, mail: dict, kind: str) -> bool:
+    """AI מחלץ שירות/מחיר/תאריך (סכום שלא במייל נזרק) → בוט הכספים: מנוי חדש = הצעה לקבועה; ניסיון / מחיר = אזהרה."""
+    if not (OPENAI_API_KEY and FINANCE_BOT_TOKEN):
+        return False
+    full = gmail.users().messages().get(userId="me", id=mail["id"], format="full").execute()
+    body = extract_body(gmail, mail["id"], full["payload"], mail["snippet"])
+    try:
+        found = subs.extract(ask_ai, kind, mail["subject"], f"{mail['snippet']}\n{body}", rules.USD_TO_ILS)
+    except Exception as ex:
+        fail("מנוי", ex)
+        return False
+    if not found:
+        print(f"💤 subscription ({kind}): nothing clear")
+        return False
+    finance_post(f"{kind} → finance bot", {**found, "link": gmail_link(mail["id"])})
+    return True
+
 FINANCE_URL = "https://bot-finance-mu.vercel.app/api/webhook?ingest"
 VENDOR_PREFIX = {"wolt.com": "וולט", "10bis.co.il": "תן ביס"}  # "וולט · פאפי פסטה" — כדי שבוט הכספים יזהה קטגוריה
 
@@ -798,10 +818,15 @@ def to_finance(vendor: str, ils: float, day, business: bool, mail_id: str) -> No
     """חיוב → בוט הכספים. הסוד נגזר מהטוקן שלו (FINANCE_BOT_TOKEN). בלוג — בלי ספק/סכום (ה-repo ציבורי)."""
     if not FINANCE_BOT_TOKEN:
         return
+    finance_post("charge → finance bot", {"vendor": vendor, "amount": ils, "date": day.isoformat(), "business": business,
+                                          "link": gmail_link(mail_id)})
+
+def finance_post(what: str, payload: dict) -> None:
+    """POST ?ingest לבוט הכספים; הסוד נגזר מהטוקן שלו. בלוג — רק מה (בלי ספק/סכום)."""
+    if not FINANCE_BOT_TOKEN:
+        return
     secret = hashlib.sha256(b"ingest:" + FINANCE_BOT_TOKEN.encode()).hexdigest()[:32]
-    resp = act("charge → finance bot", requests.post, FINANCE_URL, timeout=30, headers={"X-Ingest-Secret": secret},
-               json={"vendor": vendor, "amount": ils, "date": day.isoformat(), "business": business,
-                     "link": gmail_link(mail_id)})
+    resp = act(what, requests.post, FINANCE_URL, timeout=30, headers={"X-Ingest-Secret": secret}, json=payload)
     if resp is not None and not resp.ok:
         fail("finance bot", f"HTTP {resp.status_code}")
 
