@@ -64,14 +64,37 @@ PROMPT = """מייל אישי למאור (סטודנט להנדסת חשמל ב�
 
 האם המייל מבקש ממנו לעשות משהו, או משנה לו משהו (מבחן/שיעור שזז, טופס למלא, תור, מסמך לשלוח, חיוב חריג, תשובה שמחכים לה)?
 הודעה כללית לכולם, ניוזלטר, אישור אוטומטי, "לידיעה" בלי שום פעולה — false. אם לא בטוח — false.
+בנוסף: אם המייל מזיז מועד של משהו קיים (מבחן / שיעור / תור / פגישה שזזו) — moved; אחרת moved = null.
 JSON בלבד: {{"important": true/false, "summary": "<עד 15 מילים>", "todo": "<פועל + מה, עד 8 מילים, או null>",
-"deadline": "YYYY-MM-DD או null", "event": {{"title": "...", "date": "YYYY-MM-DD", "time": "HH:MM או null"}} או null}}"""
+"deadline": "YYYY-MM-DD או null", "event": {{"title": "...", "date": "YYYY-MM-DD", "time": "HH:MM או null"}} או null,
+"moved": {{"what": "<שם קצר כמו שכנראה ביומן, למשל 'מבחן הסתברות'>", "old_date": "YYYY-MM-DD או null",
+"new_date": "YYYY-MM-DD", "new_time": "HH:MM או null"}} או null}}"""
+
+# 🔁 C2: מייל שמזיז מועד — גם מייל לכל הקורס (הודעה על מבחן שזז), אבל רק אם יש אירוע כזה ביומן (יהלי בודקת)
+MOVE_SUBJECT = re.compile(r"נדח|הוזז|יוזז|זז\b|שינוי\s+(?:מועד|תאריך|שעה|שעת)|מועד\s+חדש|תאריך\s+חדש|הקדמת|דחיית|"
+                          r"reschedul|postpone|moved|new date|time change", re.I)
+
+DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+TIME_RE = re.compile(r"\d{1,2}:\d{2}")
+
+def moved_of(got: dict) -> dict | None:
+    m = got.get("moved") if isinstance(got, dict) else None
+    if not isinstance(m, dict) or not str(m.get("what") or "").strip() or not DAY_RE.fullmatch(str(m.get("new_date") or "")):
+        return None
+    return {"what": str(m["what"]).strip()[:60],
+            "old_date": m["old_date"] if DAY_RE.fullmatch(str(m.get("old_date") or "")) else None,
+            "new_date": m["new_date"], "new_time": m["new_time"] if TIME_RE.fullmatch(str(m.get("new_time") or "")) else None}
 
 def judge(ask_ai, mail: dict, body: str, today: date) -> dict | None:
-    """תשובת ה-AI, מנוקה; None = לא חשוב / תשובה לא תקינה."""
+    """תשובת ה-AI, מנוקה; None = לא חשוב ולא מזיז מועד / תשובה לא תקינה.
+    לא חשוב אבל מזיז מועד → {"move_only": True, ...} (יהלי מציעה רק אם יש אירוע כזה ביומן)."""
     got = ask_ai(PROMPT.format(today=today.isoformat(), sender=mail["from"][:120], subject=mail["subject"][:200],
                                body=" ".join(body.split())[:1500]))
+    moved = moved_of(got)
     if not isinstance(got, dict) or got.get("important") is not True or not str(got.get("summary") or "").strip():
+        if moved:
+            return {"summary": str(got.get("summary") or mail["subject"]).strip()[:160], "todo": None, "deadline": None,
+                    "event": None, "moved": moved, "move_only": True}
         return None
     out = {"summary": str(got["summary"]).strip()[:160], "todo": (str(got.get("todo") or "").strip() or None),
            "deadline": None, "event": None}
@@ -81,6 +104,8 @@ def judge(ask_ai, mail: dict, body: str, today: date) -> dict | None:
     if isinstance(ev, dict) and ev.get("title") and re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(ev.get("date") or "")):
         out["event"] = {"title": str(ev["title"])[:80], "date": ev["date"],
                         "time": ev.get("time") if re.fullmatch(r"\d{1,2}:\d{2}", str(ev.get("time") or "")) else None}
+    if moved:
+        out["moved"] = moved
     return out
 
 def from_name(from_header: str, address: str) -> str:

@@ -397,7 +397,8 @@ def apply_labels(gmail, calendar, mails, stats, unsubscribed, *, move: bool, not
             if notify and (vendor := business_vendor(mail["sender"], mail["subject"])):
                 handle_expense(gmail, mail, vendor)  # בנוסף למיון הרגיל (Vercel/Render הם "פיתוח")
             if notify and action not in ("junk", "block") and (
-                    action == "important" or important.pref_of(PREFS, mail["sender"], mail["from"]) == "important"):
+                    action == "important" or important.pref_of(PREFS, mail["sender"], mail["from"]) == "important"
+                    or important.MOVE_SUBJECT.search(mail["subject"] or "")):  # 🔁 מועד שזז — גם מייל לכל הקורס
                 IMPORTANT.append(mail)  # 📣 — נבדק בסוף הריצה (אישי? AI? מכסה)
             if action == "bill" and notify:
                 paid = handle_bill(gmail, calendar, mail)
@@ -752,13 +753,17 @@ def send_important(gmail, mails: list) -> int:
     picked = []
     for mail in mails:
         pref = important.pref_of(PREFS, mail["sender"], mail["from"])
-        if pref in ("not_important", "block") or (pref != "important" and not important.is_personal(mail, me)):
+        personal = important.is_personal(mail, me)
+        if pref in ("not_important", "block") or (
+                pref != "important" and not personal and not important.MOVE_SUBJECT.search(mail["subject"] or "")):
             continue
         full = gmail.users().messages().get(userId="me", id=mail["id"], format="full").execute()
         body = extract_body(gmail, mail["id"], full["payload"], mail["snippet"])
         verdict = important.judge(ask_ai, mail, body, today) if OPENAI_API_KEY else None
         if verdict is None and pref == "important":  # 👍 על השולח — שולחים גם כשה-AI לא בטוח
             verdict = {"summary": mail["subject"][:160], "todo": None, "deadline": None, "event": None}
+        if verdict and not personal and pref != "important" and not verdict.get("move_only"):
+            verdict = {**verdict, "move_only": True} if verdict.get("moved") else None  # לכל הקורס — רק המועד שזז
         if verdict:
             picked.append({**verdict, "id": mail["id"], "from_name": important.from_name(mail["from"], mail["sender"]),
                            "sender": mail["sender"], "subject": mail["subject"][:200], "link": gmail_link(mail["id"])})
@@ -767,18 +772,19 @@ def send_important(gmail, mails: list) -> int:
         return 0
     sent_label = label_id(gmail, important.SENT_LABEL_HE)
     sent_today = 0 if sent_label.startswith("<") else len(fetch(gmail, f"after:{today:%Y/%m/%d}", 50, [sent_label]))
-    single, rest = important.split_daily(picked, sent_today)
+    moves = [p for p in picked if p.get("move_only")]  # 🔁 — לא נספרים במכסה (יהלי שולחת רק אם יש אירוע ביומן)
+    single, rest = important.split_daily([p for p in picked if not p.get("move_only")], sent_today)
     strip = lambda items: [{k: v for k, v in i.items() if k != "id"} for i in items]  # noqa: E731
     resp = act(f"important → yahli: {len(single)} + {len(rest)} combined", requests.post, important.YAHLI_URL, timeout=30,
                headers={"X-Ingest-Secret": important.ingest_secret()},
-               json={"items": strip(single), "combined": strip(rest)})
+               json={"items": strip(single + moves), "combined": strip(rest)})
     if resp is not None and not resp.ok:
         fail("מיילים חשובים → יהלי", f"HTTP {resp.status_code}")
         return 0
     for item in single + rest:
         act("label → sent to yahli", gmail.users().messages().modify(
             userId="me", id=item["id"], body={"addLabelIds": [sent_label]}).execute)
-    print(f"📣 important: {len(single)} sent, {len(rest)} combined, of {len(mails)} candidates")
+    print(f"📣 important: {len(single)} sent, {len(rest)} combined, {len(moves)} date moves, of {len(mails)} candidates")
     return len(single) + len(rest)
 
 FINANCE_URL = "https://bot-finance-mu.vercel.app/api/webhook?ingest"
