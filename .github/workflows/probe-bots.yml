@@ -1,0 +1,15 @@
+name: probe which Telegram bots (temporary, removed before merge)
+on:
+  push:
+    branches: [test/important-mail]
+    paths: [.github/workflows/probe-bots.yml]
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: bot usernames only
+        env:
+          T1: ${{ secrets.TELEGRAM_TOKEN }}
+          T2: ${{ secrets.TELEGRAM_TOKEN_RECEIPTS }}
+        run: |
+          for t in "$T1" "$T2"; do curl -s "https://api.telegram.org/bot$t/getMe" | python3 -c "import json,sys;r=json.load(sys.stdin).get('result',{});print('bot:', r.get('username'))"; done
