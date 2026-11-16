@@ -657,6 +657,9 @@ def handle_splitwise(mail: dict, body: str, day) -> bool:
     created = monday_add("אישיות", "תשלומים", name, mail["id"], {
         "סטטוס": {"label": "לא התחיל"}, "דדליין": {"date": (day + timedelta(days=7)).isoformat()},
         "הערות": {"text": f"{gmail_link(mail['id'])}\nSplitwise: סה\"כ לפי המייל, החלק שלך {fmt(owe)} ₪"}})
+    if created:  # 16.11: החלק של מאור → בוט הכספים כהצעה (✅/✖️) — בלי ➗; כבר רשם אותו סכום — בוט הכספים מדלג
+        finance_post("splitwise share → finance bot", {"vendor": f"{payee} · {item} (החלק שלי)", "amount": owe,
+                                                      "date": day.isoformat(), "business": False, "link": gmail_link(mail["id"])})
     act(f"splitwise → telegram: {name}", telegram, TELEGRAM_TOKEN_RECEIPTS, CHAT_ID_RECEIPTS,
         f"💳 <b>{html.escape(name)}</b>\n📅 עד {day + timedelta(days=7):%d/%m}" + ("" if created else " (כבר ב-monday)"),
         [{"text": "📧 פתח את המייל", "url": gmail_link(mail["id"])}])
