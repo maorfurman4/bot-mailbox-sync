@@ -28,7 +28,7 @@ from googleapiclient.discovery import build
 import important
 import rules
 import subs
-from aura_report import station, working
+from aura_report import ai, station, working
 
 try:
     import PyPDF2
@@ -328,7 +328,9 @@ def ask_ai(prompt: str) -> dict:
                          json={"model": "gpt-4o-mini", "temperature": 0, "response_format": {"type": "json_object"},
                                "messages": [{"role": "user", "content": prompt}]})
     resp.raise_for_status()
-    return json.loads(resp.json()["choices"][0]["message"]["content"])
+    data = resp.json()
+    ai("gpt-4o-mini", data)  # AURA HQ: tokens for the open smart/accountant/important block
+    return json.loads(data["choices"][0]["message"]["content"])
 
 # =============================================================================
 # ─── מיון ────────────────────────────────────────────────────────────────────
