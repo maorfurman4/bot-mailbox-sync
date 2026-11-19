@@ -13,6 +13,14 @@ It never raises and never waits more than 2.5 seconds: the office must not be ab
     # an exception inside the block reports status "error" and is raised again, unchanged
 
 Station ids must match office/public/js/aura.config.js.
+
+AI usage (round 5): after every model call, one line counts it for the station whose `working` block is open (threads
+started inside the block count too). The station's next "done" or "error" report carries the totals in metrics.ai,
+and the office prices them (office/lib/prices.mjs). Nothing of the prompt or the answer is sent, only numbers.
+
+    resp = client.chat.completions.create(model='gpt-5-mini', ...)
+    ai('gpt-5-mini', resp)                      # reads resp.usage (OpenAI, Anthropic, Gemini shapes all work)
+    ai('whisper-1', audio_seconds=12.5)         # a model billed by the minute
 """
 import json
 import os
@@ -35,6 +43,44 @@ STATUSES = ('idle', 'working', 'done', 'error')
 # when the platform freezes the function after the response.
 BUFFERED = False
 _pending = []
+
+
+_open = []    # the working blocks open now, innermost last: an AI call counts for the last one
+_usage = {}   # (bot, station) -> {model: [calls, tokens_in, tokens_out, audio_seconds]}
+_LIMIT = re.compile(r'\b429\b|rate.?limit|quota|too many requests|resource.?exhausted', re.I)
+
+
+def _tokens(u):
+    """(in, out) from a response or its usage: OpenAI (prompt/completion or input/output), Anthropic, Gemini."""
+    get = lambda o, k: o.get(k) if isinstance(o, dict) else getattr(o, k, None)
+    for root in (get(u, 'usage'), get(u, 'usage_metadata'), get(u, 'usageMetadata'), u):
+        if root is None:
+            continue
+        i = next((get(root, k) for k in ('prompt_tokens', 'input_tokens', 'prompt_token_count', 'promptTokenCount') if get(root, k) is not None), None)
+        o = next((get(root, k) for k in ('completion_tokens', 'output_tokens', 'candidates_token_count', 'candidatesTokenCount') if get(root, k) is not None), None)
+        if i is not None or o is not None:
+            return int(i or 0), int(o or 0)
+    return 0, 0
+
+
+def ai(model, usage=None, tokens_in=None, tokens_out=None, audio_seconds=None, bot=None, station_id=None):
+    """Count one AI call for the station whose `working` block is open (or the bot/station given). Never raises."""
+    try:
+        if usage is not None:
+            tokens_in, tokens_out = _tokens(usage)
+        key = (bot, station_id) if bot and station_id else (_open[-1] if _open else None)
+        if not key:
+            return False
+        m = _usage.setdefault(key, {}).setdefault(str(model)[:60], [0, 0, 0, 0.0])
+        m[0] += 1; m[1] += int(tokens_in or 0); m[2] += int(tokens_out or 0); m[3] += float(audio_seconds or 0)
+        return True
+    except Exception:
+        return False
+
+
+def _take_usage(bot, station_id):
+    got = _usage.pop((bot, station_id), None)
+    return [{'model': k, 'calls': v[0], 'in': v[1], 'out': v[2], **({'sec': round(v[3], 1)} if v[3] else {})} for k, v in got.items()] if got else None
 
 
 _announced = False
@@ -78,6 +124,10 @@ def station(bot, station_id, status, headline=None, metrics=None, handoff_to=Non
     _announce(url, key)  # at the first report, not at import: a bot may set its defaults after importing this file
     if not url or not key or status not in STATUSES or os.environ.get('AURA_REPORT') == 'off' or time.time() < _quiet_until:
         return False
+    if status in ('done', 'error'):
+        used = _take_usage(bot, station_id)
+        if used:
+            metrics = {**(metrics or {}), 'ai': used}
     row = {
         'bot': bot, 'kind': 'station', 'station_id': station_id, 'status': status,
         'text': (headline or '')[:300] or None, 'metrics': metrics or None, 'handoff_to': handoff_to,
@@ -121,6 +171,7 @@ class working:
 
     def __enter__(self):
         station(self.bot, self.station_id, 'working', self.headline, **self.kw)
+        _open.append((self.bot, self.station_id))
         return self
 
     def update(self, headline, **metrics):
@@ -131,8 +182,10 @@ class working:
         station(self.bot, self.station_id, 'done', headline or self.headline, metrics, handoff_to, **self.kw)
 
     def __exit__(self, exc_type, exc, tb):
+        if (self.bot, self.station_id) in _open:
+            _open.reverse(); _open.remove((self.bot, self.station_id)); _open.reverse()   # the innermost one
         if exc_type is not None:
-            station(self.bot, self.station_id, 'error', _safe(exc_type, exc), **self.kw)
+            station(self.bot, self.station_id, 'error', _safe(exc_type, exc), {'limit': True} if _LIMIT.search(str(exc)) else None, **self.kw)
         elif not self.closed:
             self.done()
         return False
@@ -158,4 +211,22 @@ if __name__ == '__main__':   # python aura_report.py : self-check, no network
     assert len(_pending) == 2 and _pending[0]['ts'] <= _pending[1]['ts'], 'buffered rows keep their own time and order'
     assert flush() is False and not _pending, 'a flush to an unreachable office fails quietly and leaves nothing behind'
     assert flush() is True, 'nothing to send is fine'
+    # AI usage: counted for the open block, carried by its done report, priced by the office
+    _pending.clear(); _quiet_until = 0.0
+    class _U: prompt_tokens, completion_tokens = 120, 30
+    class _R: usage = _U()
+    with working('news', 'editor', 'x', buffered=True) as w:
+        assert ai('gpt-5-mini', _R()) and ai('gpt-5-mini', {'usage': {'input_tokens': 10, 'output_tokens': 5}})
+        assert ai('gemini-2.5-flash', {'usageMetadata': {'promptTokenCount': 7, 'candidatesTokenCount': 3}})
+        w.done('ok')
+    done = _pending[-1]
+    assert done['status'] == 'done' and {m['model']: (m['calls'], m['in'], m['out']) for m in done['metrics']['ai']} == {'gpt-5-mini': (2, 130, 35), 'gemini-2.5-flash': (1, 7, 3)}, done
+    assert ai('gpt-5-mini', _R()) is False, 'no open block: nothing to count'
+    try:
+        with working('news', 'editor', 'x', buffered=True):
+            raise RuntimeError('OpenAI 429 Too Many Requests')
+    except RuntimeError:
+        pass
+    assert _pending[-1]['status'] == 'error' and _pending[-1]['metrics'] == {'limit': True}
+    _pending.clear()
     print('ok: aura_report')
