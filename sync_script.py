@@ -322,14 +322,18 @@ def telegram_file(token, chat_id, name: str, data: bytes):
     if not resp.json().get("ok"):
         raise RuntimeError(f"Telegram file: {resp.json().get('description')}")
 
+# gpt-4o-mini shuts down on 2027-01-14. gpt-6.1-terra sorted more precisely in a side-by-side test (2026-11-19); gpt-6-luna was cheaper
+# but called a homework reminder junk and a Facebook security notice an order.
+AI_MODEL = os.environ.get("AI_MODEL", "").strip() or "gpt-6.1-terra"
+
 def ask_ai(prompt: str) -> dict:
-    resp = requests.post("https://api.openai.com/v1/chat/completions", timeout=90,
+    resp = requests.post("https://api.openai.com/v1/chat/completions", timeout=120,
                          headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
-                         json={"model": "gpt-4o-mini", "temperature": 0, "response_format": {"type": "json_object"},
+                         json={"model": AI_MODEL, "reasoning_effort": "low", "response_format": {"type": "json_object"},
                                "messages": [{"role": "user", "content": prompt}]})
     resp.raise_for_status()
     data = resp.json()
-    ai("gpt-4o-mini", data)  # AURA HQ: tokens for the open smart/accountant/important block
+    ai(AI_MODEL, data)  # AURA HQ: tokens for the open smart/accountant/important block
     return json.loads(data["choices"][0]["message"]["content"])
 
 # =============================================================================
