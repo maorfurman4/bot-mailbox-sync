@@ -1,6 +1,6 @@
 # Mailbox bot
 
-Organizes Gmail with the bot's 9 colored labels, 3 runs/day via GitHub Actions. Rules first (`rules.py`), then batched gpt-4o-mini. Telegram only for bills/receipts and failures — Maor wants no mail alerts. Dispatch inputs: `dry_run`, `organize_all`.
+Organizes Gmail with the bot's 9 colored labels, 3 runs/day via GitHub Actions. Rules first (`rules.py`), then batched gpt-6.1-terra. Telegram only for bills/receipts and failures — Maor wants no mail alerts. Dispatch inputs: `dry_run`, `organize_all`.
 
 ## Working with Maor
 - Reply in Hebrew; code, commands and commit messages stay in English. Say exactly what you'll do next and what you need from him.
