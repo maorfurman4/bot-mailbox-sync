@@ -16,6 +16,7 @@ Station ids must match office/public/js/aura.config.js.
 """
 import json
 import os
+import re
 import ssl
 import time
 import urllib.request
@@ -73,6 +74,13 @@ def station(bot, station_id, status, headline=None, metrics=None, handoff_to=Non
         return False
 
 
+def _safe(exc_type, exc):
+    """An error's summary without what an exception text can carry: URLs (a Telegram URL holds the bot token) and long tokens."""
+    text = re.sub(r'https?://\S+', '[url]', str(exc))
+    text = re.sub(r'\S{24,}', '[...]', text)
+    return f'{exc_type.__name__}: {text}'[:160]
+
+
 class working:
     """with working(bot, station_id, headline) as w: ...; w.done(headline, **metrics)"""
 
@@ -92,7 +100,7 @@ class working:
 
     def __exit__(self, exc_type, exc, tb):
         if exc_type is not None:
-            station(self.bot, self.station_id, 'error', f'{exc_type.__name__}: {exc}', **self.kw)
+            station(self.bot, self.station_id, 'error', _safe(exc_type, exc), **self.kw)
         elif not self.closed:
             self.done()
         return False
@@ -112,4 +120,5 @@ if __name__ == '__main__':   # python aura_report.py : self-check, no network
         pass
     else:
         raise AssertionError('the bot error must pass through')
+    assert 'SECRET' not in _safe(ValueError, ValueError('failed https://api.telegram.org/bot123:SECRETSECRET/send key=SECRETSECRETSECRETSECRETSECRET'))
     print('ok: aura_report')
