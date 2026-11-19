@@ -28,6 +28,7 @@ from googleapiclient.discovery import build
 import important
 import rules
 import subs
+from aura_report import station, working
 
 try:
     import PyPDF2
@@ -39,6 +40,8 @@ except ImportError:
 # =============================================================================
 DRY_RUN = os.environ.get("DRY_RUN", "").strip() == "1"
 ORGANIZE_ALL = os.environ.get("ORGANIZE_ALL", "").strip() == "1"
+if DRY_RUN:
+    os.environ["AURA_REPORT"] = "off"  # a dry run (and the tests) must not show up in the office
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 
 MERGE = os.environ.get("MERGE_LABELS", "").strip() == "1"
@@ -76,6 +79,27 @@ FINANCE_BOT_TOKEN = os.environ.get("FINANCE_BOT_TOKEN", "").strip()  # בוט ה
 FAILURES = []
 PREFS = important.load_prefs()  # 👍/👎/🚫 ו"אפקה חשוב" — יהלי כותבת ל-prefs.json
 IMPORTANT = []  # מועמדים ל-📣 בריצה הזו
+
+# AURA HQ (aura_report.py): station reports to the office — counts only, never a subject, a sender or an amount
+BOT = "mail"
+DESTINATIONS = ("receipts", "calendar", "monday", "yahli", "finance")
+SENT = dict.fromkeys(DESTINATIONS + ("bills",), 0)  # what really went out in this run
+
+class stage(working):
+    """working(), but an error reports only its type: the text can hold a Telegram URL with the token, a subject or an amount."""
+    def __exit__(self, exc_type, exc, tb):
+        return super().__exit__(exc_type, exc and "הפרטים בלוג הריצה", tb)
+
+def labeled(stats: dict) -> int:
+    return sum(stats[k] for k in PLACES)
+
+def accountant(fn, *args):
+    """The accountant station around one money mail (bill / expense / order / subscription); result and errors pass through."""
+    with stage(BOT, "accountant", "מחלץ פרטים ממייל כספי") as w:
+        result = fn(*args)
+        SENT["bills"] += 1
+        w.done(f"{SENT['bills']} מיילים כספיים טופלו", bills=SENT["bills"])
+        return result
 
 def fail(section: str, ex) -> None:
     print(f"❌ {section}: {ex}")
@@ -364,8 +388,19 @@ def junk(gmail, mail: dict, unsubscribed: set, stats: dict):
 
 def classify(mails: list) -> dict:
     """שולח מוכר / מיון של Gmail בלי AI; את השאר — קריאת AI אחת לכל 25 מיילים."""
-    result = {m["id"]: known_category(m["sender"], m["subject"], m["labels"]) for m in mails}
-    unknown = [m for m in mails if result[m["id"]] is None]
+    with stage(BOT, "rules", f"ממיין {len(mails)} מיילים לפי כללים") as w:
+        result = {m["id"]: known_category(m["sender"], m["subject"], m["labels"]) for m in mails}
+        unknown = [m for m in mails if result[m["id"]] is None]
+        w.done(f"{len(mails) - len(unknown)} מתוך {len(mails)} סווגו לפי כללים", classified=len(mails) - len(unknown))
+    if unknown:
+        with stage(BOT, "smart", f"ממיין {len(unknown)} מיילים עם AI") as w:
+            classify_ai(unknown, result)
+            w.done(f"{len(unknown)} מיילים סווגו ב-AI", mails=len(unknown), calls=-(-len(unknown) // 25))
+    print(f"🧮 {len(mails)} emails: {len(mails) - len(unknown)} by rules, {len(unknown)} by AI "
+          f"in {-(-len(unknown) // 25)} call(s)")
+    return result
+
+def classify_ai(unknown: list, result: dict) -> None:
     for start in range(0, len(unknown), 25):
         chunk = unknown[start:start + 25]
         listing = "\n".join(f'{i}. שולח: {m["from"]} | נושא: {m["subject"]} | תקציר: {m["snippet"][:200]}'
@@ -377,46 +412,46 @@ def classify(mails: list) -> dict:
             answers = {}
         for i, m in enumerate(chunk):
             result[m["id"]] = answers.get(i, "other")  # בלי תשובה → כללי (לא נמחק)
-    print(f"🧮 {len(mails)} emails: {len(mails) - len(unknown)} by rules, {len(unknown)} by AI "
-          f"in {-(-len(unknown) // 25)} call(s)")
-    return result
 
 def apply_labels(gmail, calendar, mails, stats, unsubscribed, *, move: bool, notify: bool, merging: bool = False):
     """מיון → תווית. move: להזיז לתיבה/ממנה; notify: חשבון לטלגרם ויומן; merging: מיזוג התוויות הישנות."""
     done_id = label_id(gmail, DONE_LABEL)
     categories = classify(mails)
-    for mail in mails:
-        action = decide(mail["sender"], mail["subject"], categories[mail["id"]])
-        if merging:
-            action = merge_action(action, mail["subject"])
-        print(f"📨 {action:9} ← {categories[mail['id']]!s:9} | {mail['sender']} | {mail['subject'][:60]}")
-        try:
-            if action in ("junk", "block"):
-                junk(gmail, mail, unsubscribed, stats)
-                continue
-            paid = True
-            if notify and (vendor := business_vendor(mail["sender"], mail["subject"])):
-                handle_expense(gmail, mail, vendor)  # בנוסף למיון הרגיל (Vercel/Render הם "פיתוח")
-            if notify and action not in ("junk", "block") and (
-                    action == "important" or important.pref_of(PREFS, mail["sender"], mail["from"]) == "important"
-                    or important.MOVE_SUBJECT.search(mail["subject"] or "")):  # 🔁 מועד שזז — גם מייל לכל הקורס
-                IMPORTANT.append(mail)  # 📣 — נבדק בסוף הריצה (אישי? AI? מכסה)
-            if notify and action not in ("junk", "block", "bill") and (kind := subs.kind_of(mail["subject"])):
-                handle_subscription(gmail, mail, kind)  # 💳 מנוי חדש / ⏳ ניסיון / 📈 מחיר → בוט הכספים
-            if action == "bill" and notify:
-                paid = handle_bill(gmail, calendar, mail)
-            elif notify and is_order(mail["sender"], mail["subject"]):
-                handle_order(gmail, mail)  # בנוסף למיון הרגיל (נשאר ב-✈️ הזמנות)
-            name, in_inbox = placement(action, paid=paid, address=mail["sender"])
-            add, remove = inbox_change(in_inbox, mail["labels"], move)
-            body = {"addLabelIds": [label_id(gmail, name, PLACES[action][2]), done_id] + ([add] if add else [])}
-            if remove:
-                body["removeLabelIds"] = [remove]
-            act(f"{name}{' → inbox' if add else ' (archive)' if remove else ''}: {mail['subject'][:50]}",
-                gmail.users().messages().modify(userId="me", id=mail["id"], body=body).execute)
-            stats[action] += 1
-        except Exception as ex:
-            fail(f"{action}: {mail['subject'][:40]}", ex)
+    before = labeled(stats)
+    with stage(BOT, "filer", f"מתייק {len(mails)} מיילים") as w:
+        for mail in mails:
+            action = decide(mail["sender"], mail["subject"], categories[mail["id"]])
+            if merging:
+                action = merge_action(action, mail["subject"])
+            print(f"📨 {action:9} ← {categories[mail['id']]!s:9} | {mail['sender']} | {mail['subject'][:60]}")
+            try:
+                if action in ("junk", "block"):
+                    junk(gmail, mail, unsubscribed, stats)
+                    continue
+                paid = True
+                if notify and (vendor := business_vendor(mail["sender"], mail["subject"])):
+                    accountant(handle_expense, gmail, mail, vendor)  # בנוסף למיון הרגיל (Vercel/Render הם "פיתוח")
+                if notify and action not in ("junk", "block") and (
+                        action == "important" or important.pref_of(PREFS, mail["sender"], mail["from"]) == "important"
+                        or important.MOVE_SUBJECT.search(mail["subject"] or "")):  # 🔁 מועד שזז — גם מייל לכל הקורס
+                    IMPORTANT.append(mail)  # 📣 — נבדק בסוף הריצה (אישי? AI? מכסה)
+                if notify and action not in ("junk", "block", "bill") and (kind := subs.kind_of(mail["subject"])):
+                    accountant(handle_subscription, gmail, mail, kind)  # 💳 מנוי חדש / ⏳ ניסיון / 📈 מחיר → בוט הכספים
+                if action == "bill" and notify:
+                    paid = accountant(handle_bill, gmail, calendar, mail)
+                elif notify and is_order(mail["sender"], mail["subject"]):
+                    accountant(handle_order, gmail, mail)  # בנוסף למיון הרגיל (נשאר ב-✈️ הזמנות)
+                name, in_inbox = placement(action, paid=paid, address=mail["sender"])
+                add, remove = inbox_change(in_inbox, mail["labels"], move)
+                body = {"addLabelIds": [label_id(gmail, name, PLACES[action][2]), done_id] + ([add] if add else [])}
+                if remove:
+                    body["removeLabelIds"] = [remove]
+                act(f"{name}{' → inbox' if add else ' (archive)' if remove else ''}: {mail['subject'][:50]}",
+                    gmail.users().messages().modify(userId="me", id=mail["id"], body=body).execute)
+                stats[action] += 1
+            except Exception as ex:
+                fail(f"{action}: {mail['subject'][:40]}", ex)
+        w.done(f"{labeled(stats) - before} מיילים תויקו", labeled=labeled(stats) - before)
 
 def merge_old_labels(gmail, calendar, stats, unsubscribed):
     """מעביר כל מה שבתוויות שלך לתוויות החדשות, ואז מוחק את התוויות הישנות (המיילים עצמם נשארים)."""
@@ -442,11 +477,14 @@ def organize(gmail, calendar):
 
     # 1) שולחים חסומים — כל מה שבתיבה, גם ישן (כולל 🚫 מיהלי ב-prefs.json)
     blocked = rules.BLOCK + [e for e in PREFS["block"] if not e.startswith("word:")]
-    for msg in fetch(gmail, "in:inbox from:(" + " OR ".join(blocked) + ")", 500):
-        mail = metadata(gmail, msg["id"])
-        # החיפוש של Gmail רחב יותר מהכלל, והתראות אבטחה עוברות חסימה — לכן decide
-        if decide(mail["sender"], mail["subject"], "junk") == "block":
-            junk(gmail, mail, unsubscribed, stats)
+    before = stats["junk"]
+    with stage(BOT, "doorman", "בודק שולחים חסומים") as w:
+        for msg in fetch(gmail, "in:inbox from:(" + " OR ".join(blocked) + ")", 500):
+            mail = metadata(gmail, msg["id"])
+            # החיפוש של Gmail רחב יותר מהכלל, והתראות אבטחה עוברות חסימה — לכן decide
+            if decide(mail["sender"], mail["subject"], "junk") == "block":
+                junk(gmail, mail, unsubscribed, stats)
+        w.done(f"{stats['junk'] - before} מיילים משולחים חסומים נזרקו", blocked=stats["junk"] - before)
 
     # 2) מיילים חדשים בכל ה-Gmail — גם מה שפילטרים ישנים העבירו ישר לתוויות ועקף את התיבה.
     #    ORGANIZE_ALL: כל התיבה + 60 יום אחורה, בלי להזיז מיקום ובלי טלגרם/יומן
@@ -457,7 +495,9 @@ def organize(gmail, calendar):
     apply_labels(gmail, calendar, mails, stats, unsubscribed, move=not ORGANIZE_ALL, notify=not ORGANIZE_ALL)
     if not ORGANIZE_ALL:
         try:
-            stats["important_sent"] = send_important(gmail, IMPORTANT)
+            with stage(BOT, "important", f"בודק {len(IMPORTANT)} מועמדים למייל חשוב") as w:
+                stats["important_sent"] = send_important(gmail, IMPORTANT)
+                w.done(f"{stats['important_sent']} מיילים חשובים סומנו", flagged=stats["important_sent"])
         except Exception as ex:
             fail("מיילים חשובים → יהלי", ex)
 
@@ -468,31 +508,33 @@ def organize(gmail, calendar):
         print(f"🧹 tidy inbox: {len(inbox)} emails")
         apply_labels(gmail, calendar, inbox, stats, unsubscribed, move=True, notify=False)
 
-    # 3) פג תוקף → לפח: אבטחה ופיתוח אחרי יום, דיוור מערכת של אפקה אחרי יומיים — אבל לא שיחה שענית בה.
-    #    לפי מזהה התווית — חיפוש לפי שם עם אימוג'י לא אמין
-    for category, days in EXPIRY_DAYS.items():
-        lid = label_id(gmail, PLACES[category][0])
-        if lid.startswith("<"):
-            continue  # DRY_RUN לפני שהתווית נוצרה
-        for msg in fetch(gmail, f"older_than:{days}d -in:trash", 500, [lid]):
-            mail = metadata(gmail, msg["id"])
-            if is_expired(category, mail["subject"], mail["sender"]) and not (
-                    category == "studies" and replied(gmail, mail)):
-                act(f"expired → trash: {mail['subject'][:50]}",
-                    gmail.users().messages().trash(userId="me", id=mail["id"]).execute)
-                stats["expired"] += 1
+    with stage(BOT, "filer", "זורק מיילים שפג תוקפם ומסמן ממתינים לתשובה") as w:
+        # 3) פג תוקף → לפח: אבטחה ופיתוח אחרי יום, דיוור מערכת של אפקה אחרי יומיים — אבל לא שיחה שענית בה.
+        #    לפי מזהה התווית — חיפוש לפי שם עם אימוג'י לא אמין
+        for category, days in EXPIRY_DAYS.items():
+            lid = label_id(gmail, PLACES[category][0])
+            if lid.startswith("<"):
+                continue  # DRY_RUN לפני שהתווית נוצרה
+            for msg in fetch(gmail, f"older_than:{days}d -in:trash", 500, [lid]):
+                mail = metadata(gmail, msg["id"])
+                if is_expired(category, mail["subject"], mail["sender"]) and not (
+                        category == "studies" and replied(gmail, mail)):
+                    act(f"expired → trash: {mail['subject'][:50]}",
+                        gmail.users().messages().trash(userId="me", id=mail["id"]).execute)
+                    stats["expired"] += 1
 
-    # 4) ⏳ ממתין לתשובה — מייל חשוב מאדם, בתיבה יותר מ-3 ימים, ועוד לא ענית בשיחה
-    important_id, waiting_id = label_id(gmail, PLACES["important"][0]), label_id(gmail, *PLACES["waiting"][::2])
-    if not important_id.startswith("<"):
-        for msg in fetch(gmail, f"in:inbox older_than:{WAITING_AFTER_DAYS}d", 200, [important_id]):
-            mail = metadata(gmail, msg["id"])
-            waiting = is_person(mail["sender"], mail["subject"]) and not replied(gmail, mail)
-            if waiting != (waiting_id in mail["labels"]):  # להוסיף, או להוריד אחרי שענית
-                act(f"{'⏳ waiting' if waiting else '✔️ replied'}: {mail['subject'][:50]}",
-                    gmail.users().messages().modify(userId="me", id=mail["id"], body={
-                        "addLabelIds" if waiting else "removeLabelIds": [waiting_id]}).execute)
-                stats["waiting"] += waiting
+        # 4) ⏳ ממתין לתשובה — מייל חשוב מאדם, בתיבה יותר מ-3 ימים, ועוד לא ענית בשיחה
+        important_id, waiting_id = label_id(gmail, PLACES["important"][0]), label_id(gmail, *PLACES["waiting"][::2])
+        if not important_id.startswith("<"):
+            for msg in fetch(gmail, f"in:inbox older_than:{WAITING_AFTER_DAYS}d", 200, [important_id]):
+                mail = metadata(gmail, msg["id"])
+                waiting = is_person(mail["sender"], mail["subject"]) and not replied(gmail, mail)
+                if waiting != (waiting_id in mail["labels"]):  # להוסיף, או להוריד אחרי שענית
+                    act(f"{'⏳ waiting' if waiting else '✔️ replied'}: {mail['subject'][:50]}",
+                        gmail.users().messages().modify(userId="me", id=mail["id"], body={
+                            "addLabelIds" if waiting else "removeLabelIds": [waiting_id]}).execute)
+                    stats["waiting"] += waiting
+        w.done(f"{labeled(stats)} מיילים תויקו, {stats['expired']} שפג תוקפם נזרקו", labeled=labeled(stats), trashed=stats["expired"])
     return stats
 
 # =============================================================================
@@ -598,6 +640,7 @@ def handle_bill(gmail, calendar, mail: dict) -> bool:
         buttons.append({"text": "💳 לתשלום (באתר של הספק)", "url": bill["payment_link"]})
     buttons.append({"text": "📧 פתח את המייל", "url": gmail_link(mail["id"])})
     act(f"receipt → telegram: {merchant} {amount}", telegram, TELEGRAM_TOKEN_RECEIPTS, CHAT_ID_RECEIPTS, text, buttons)
+    SENT["receipts"] += 1
     for name, data in pdf_attachments(gmail, mail["id"], full["payload"]):
         act(f"pdf → telegram: {name}", telegram_file, TELEGRAM_TOKEN_RECEIPTS, CHAT_ID_RECEIPTS, name, data)
     # קבלה ששולמה → בוט הכספים (הצעה ✅/✖️). הוצאת עסק — כבר נשלחה ב-handle_expense
@@ -615,6 +658,7 @@ def handle_bill(gmail, calendar, mail: dict) -> bool:
                 "start": {"date": due}, "end": {"date": end},
                 "extendedProperties": {"private": {"mailbot": mail["id"]}},
             }).execute)
+            SENT["calendar"] += 1
     return is_paid
 
 # =============================================================================
@@ -657,12 +701,14 @@ def handle_splitwise(mail: dict, body: str, day) -> bool:
     created = monday_add("אישיות", "תשלומים", name, mail["id"], {
         "סטטוס": {"label": "לא התחיל"}, "דדליין": {"date": (day + timedelta(days=7)).isoformat()},
         "הערות": {"text": f"{gmail_link(mail['id'])}\nSplitwise: סה\"כ לפי המייל, החלק שלך {fmt(owe)} ₪"}})
+    SENT["monday"] += created
     if created:  # 16.11: החלק של מאור → בוט הכספים כהצעה (✅/✖️) — בלי ➗; כבר רשם אותו סכום — בוט הכספים מדלג
         finance_post("splitwise share → finance bot", {"vendor": f"{payee} · {item} (החלק שלי)", "amount": owe,
                                                       "date": day.isoformat(), "business": False, "link": gmail_link(mail["id"])})
     act(f"splitwise → telegram: {name}", telegram, TELEGRAM_TOKEN_RECEIPTS, CHAT_ID_RECEIPTS,
         f"💳 <b>{html.escape(name)}</b>\n📅 עד {day + timedelta(days=7):%d/%m}" + ("" if created else " (כבר ב-monday)"),
         [{"text": "📧 פתח את המייל", "url": gmail_link(mail["id"])}])
+    SENT["receipts"] += 1
     return False
 
 def business_vendor(address: str, subject: str):
@@ -787,6 +833,9 @@ def send_important(gmail, mails: list) -> int:
     if resp is not None and not resp.ok:
         fail("מיילים חשובים → יהלי", f"HTTP {resp.status_code}")
         return 0
+    if resp is not None:  # really posted (not a dry run)
+        SENT["yahli"] = len(single) + len(moves) + len(rest)
+        station(BOT, "couriers", "done", f"{SENT['yahli']} מיילים חשובים נמסרו ליהלי", {"yahli": SENT["yahli"]}, handoff_to="yahli")
     for item in single + rest:
         act("label → sent to yahli", gmail.users().messages().modify(
             userId="me", id=item["id"], body={"addLabelIds": [sent_label]}).execute)
@@ -832,6 +881,10 @@ def finance_post(what: str, payload: dict) -> None:
     resp = act(what, requests.post, FINANCE_URL, timeout=30, headers={"X-Ingest-Secret": secret}, json=payload)
     if resp is not None and not resp.ok:
         fail("finance bot", f"HTTP {resp.status_code}")
+    elif resp is not None:  # really posted (not a dry run)
+        SENT["finance"] += 1
+        if SENT["finance"] == 1:  # one handoff per run; the full count goes out at the end of the run
+            station(BOT, "couriers", "done", "חיוב נמסר לבוט הכספים", {"finance": 1}, handoff_to="finance")
 
 def monday_gql(query: str, **variables) -> dict:
     resp = requests.post("https://api.monday.com/v2", json={"query": query, "variables": variables}, timeout=30,
@@ -870,6 +923,8 @@ def main():
     print(f"--- Mail manager {' | '.join(modes)} ---")
     stats = organize(gmail, calendar)
     print("🏁 " + " ".join(f"{k}={v}" for k, v in stats.items()))
+    if sent := {d: SENT[d] for d in DESTINATIONS if SENT[d]}:
+        station(BOT, "couriers", "done", f"{sum(sent.values())} משלוחים ל-{len(sent)} יעדים", sent)
     if FAILURES:
         act("failures → telegram", telegram, TELEGRAM_TOKEN, CHAT_ID,
             "⚠️ <b>מנהל המייל — מה לא עבד:</b>\n" + "\n".join(FAILURES))
