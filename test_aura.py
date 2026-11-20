@@ -33,6 +33,11 @@ try:
         raise AssertionError("the error must propagate")
     assert [(e[1], e[2]) for e in events] == [("accountant", "working"), ("accountant", "error")]
     assert "SECRET" not in events[1][3] and "סודי" not in events[1][3] and events[1][3].startswith("RuntimeError")
+
+    # the error report says where in the bot's own code it happened (file, line, function only)
+    w = events[1][4]["where"]
+    assert w["file"].endswith("test_aura.py") and w["func"] == "<genexpr>" and isinstance(w["line"], int), w
+    assert any(t.startswith("sync_script.py:") and t.endswith(" accountant") for t in w["trace"]), w
 finally:
     aura_report.station, M.station, M.known_category = real[:3]
     M.SENT.update(real[3])
