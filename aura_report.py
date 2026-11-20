@@ -27,6 +27,7 @@ import os
 import re
 import ssl
 import time
+import traceback
 import urllib.request
 from datetime import datetime, timezone
 
@@ -156,6 +157,21 @@ def flush():
     return _send(rows, url, key)
 
 
+def _where(tb):
+    """The error's place in the bot's own code (the deepest frame outside Python's libraries and this file): file, line,
+    function, plus at most 3 short frames. Only paths and names, never values."""
+    try:
+        own = [f for f in traceback.extract_tb(tb)
+               if 'site-packages' not in f.filename and '/lib/python' not in f.filename and not f.filename.endswith('aura_report.py')]
+        if not own:
+            return None
+        rel = lambda f: os.path.relpath(f.filename) if not os.path.relpath(f.filename).startswith('..') else os.path.basename(f.filename)
+        last = own[-1]
+        return {'file': rel(last), 'line': last.lineno, 'func': last.name, 'trace': [f'{rel(f)}:{f.lineno} {f.name}' for f in own[-3:]]}
+    except Exception:
+        return None
+
+
 def _safe(exc_type, exc):
     """An error's summary without what an exception text can carry: URLs (a Telegram URL holds the bot token) and long tokens."""
     text = re.sub(r'https?://\S+', '[url]', str(exc))
@@ -185,7 +201,8 @@ class working:
         if (self.bot, self.station_id) in _open:
             _open.reverse(); _open.remove((self.bot, self.station_id)); _open.reverse()   # the innermost one
         if exc_type is not None:
-            station(self.bot, self.station_id, 'error', _safe(exc_type, exc), {'limit': True} if _LIMIT.search(str(exc)) else None, **self.kw)
+            metrics = {**({'limit': True} if _LIMIT.search(str(exc)) else {}), **({'where': _where(tb)} if _where(tb) else {})}
+            station(self.bot, self.station_id, 'error', _safe(exc_type, exc), metrics or None, **self.kw)
         elif not self.closed:
             self.done()
         return False
@@ -227,6 +244,16 @@ if __name__ == '__main__':   # python aura_report.py : self-check, no network
             raise RuntimeError('OpenAI 429 Too Many Requests')
     except RuntimeError:
         pass
-    assert _pending[-1]['status'] == 'error' and _pending[-1]['metrics'] == {'limit': True}
+    assert _pending[-1]['status'] == 'error' and _pending[-1]['metrics']['limit'] is True
+    _pending.clear()
+    _bot = {}; exec(compile("def boom():\n    raise ValueError('bad deal')", 'bot.py', 'exec'), _bot)
+    try:
+        with working('panda', 'fit', 'x', buffered=True):
+            _bot['boom']()
+    except ValueError:
+        pass
+    w = _pending[-1]['metrics']['where']
+    assert (w['file'], w['line'], w['func']) == ('bot.py', 2, 'boom'), w   # the place in the bot's own code
+    _pending.clear()
     _pending.clear()
     print('ok: aura_report')
