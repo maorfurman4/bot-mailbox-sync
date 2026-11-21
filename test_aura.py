@@ -42,3 +42,28 @@ finally:
     aura_report.station, M.station, M.known_category = real[:3]
     M.SENT.update(real[3])
 print("ok: aura stations")
+
+# AURA control: Maor's overrides; none set -> today's values; wrong type -> ignored; paused -> main() stops before Gmail or any report
+import time  # noqa: E402
+import important  # noqa: E402
+real_cfg = (M.AI_MODEL, important.DAILY_LIMIT, M.WAITING_AFTER_DAYS)
+def aura(settings, paused=False):
+    M.AI_MODEL, important.DAILY_LIMIT, M.WAITING_AFTER_DAYS = real_cfg  # each case starts from the code's values
+    aura_report._cfg["mail"] = (time.time(), {"paused": paused, "settings": settings})
+    M.apply_aura_settings()
+    return M.AI_MODEL, important.DAILY_LIMIT, M.WAITING_AFTER_DAYS
+assert aura({}) == real_cfg == ((os.environ.get("AI_MODEL", "").strip() or "gpt-6.1-terra"), 3, 3)
+assert aura({"AI_MODEL": ["gpt-6-luna"], "DAILY_LIMIT": 5, "WAITING_AFTER_DAYS": 7}) == ("gpt-6-luna", 5, 7)
+assert important.split_daily(list(range(6)), 0) == ([0, 1, 2, 3, 4], [5])
+assert aura({"AI_MODEL": "gpt-6-luna", "DAILY_LIMIT": "abc", "WAITING_AFTER_DAYS": 2.5}) == real_cfg
+aura({}, paused=True)
+events.clear()
+real_services, aura_report.station, M.station = M.get_google_services, (lambda *a, **k: events.append(a)), (lambda *a, **k: events.append(a))
+M.get_google_services = lambda: (_ for _ in ()).throw(AssertionError("ran while paused"))
+try:
+    M.main()
+    assert events == [], events
+finally:
+    M.get_google_services, aura_report.station, M.station = real_services, real[0], real[1]
+aura({})
+print("ok: aura control")

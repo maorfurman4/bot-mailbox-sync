@@ -28,7 +28,7 @@ from googleapiclient.discovery import build
 import important
 import rules
 import subs
-from aura_report import ai, station, working
+from aura_report import ai, cfg_get, paused, station, working
 
 try:
     import PyPDF2
@@ -922,7 +922,17 @@ def monday_add(board_part: str, group_part: str, name: str, mail_id: str, values
 # =============================================================================
 # ─── MAIN ────────────────────────────────────────────────────────────────────
 # =============================================================================
+def apply_aura_settings():
+    """Maor's overrides from AURA, read once at run start: AURA > env AI_MODEL > the constants; none set -> no change."""
+    global AI_MODEL, WAITING_AFTER_DAYS
+    AI_MODEL = cfg_get(BOT, "AI_MODEL", [AI_MODEL])[0]
+    important.DAILY_LIMIT = cfg_get(BOT, "DAILY_LIMIT", important.DAILY_LIMIT)
+    WAITING_AFTER_DAYS = cfg_get(BOT, "WAITING_AFTER_DAYS", WAITING_AFTER_DAYS)
+
 def main():
+    if paused(BOT):
+        return  # paused in AURA: no Gmail, no station report
+    apply_aura_settings()
     gmail, calendar = get_google_services()
     modes = [m for m, on in (("DRY RUN — no changes", DRY_RUN), ("ORGANIZE ALL", ORGANIZE_ALL), ("MERGE LABELS", MERGE),
                              ("TIDY INBOX", TIDY_INBOX)) if on]
