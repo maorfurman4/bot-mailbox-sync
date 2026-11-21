@@ -208,6 +208,63 @@ class working:
         return False
 
 
+# ---- AURA control (stage 5): the pause flag and Maor's settings overrides, read once per run ----
+# A setting with no override (or of the wrong type) falls back to the constant in the bot's own code, so a bot with no
+# rows behaves exactly as before. Fail-open (Maor, 2026-11-21): if Supabase can't be read the run goes on, not paused.
+_cfg = {}   # bot -> (read at, {'paused', 'settings'})
+
+
+def config(bot):
+    """{'paused': bool, 'settings': {key: value}} from rpc aura_config, cached 60 s per bot. Never raises."""
+    hit = _cfg.get(bot)
+    if hit and time.time() - hit[0] < 60:
+        return hit[1]
+    out = {'paused': False, 'settings': {}}
+    url, key = _config()
+    if url and key and os.environ.get('AURA_REPORT') != 'off':
+        try:
+            req = urllib.request.Request(
+                url.rstrip('/') + '/rest/v1/rpc/aura_config', data=json.dumps({'p_bot': bot}).encode(), method='POST',
+                headers={'apikey': key, 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
+            with urllib.request.urlopen(req, timeout=5, context=_TLS) as r:
+                got = json.loads(r.read() or b'{}')
+            out = {'paused': got.get('paused') is True, 'settings': got.get('settings') or {}}
+        except Exception as e:
+            print(f'[AURA] config unreachable, running with the defaults: {type(e).__name__}', flush=True)
+    _cfg[bot] = (time.time(), out)
+    return out
+
+
+def _fits(v, d):
+    if isinstance(d, bool):
+        return isinstance(v, bool)
+    if isinstance(d, (int, float)):
+        return isinstance(v, (int, float)) and not isinstance(v, bool) and (not isinstance(d, int) or float(v).is_integer())
+    if isinstance(d, str):
+        return isinstance(v, str)
+    if isinstance(d, (list, tuple)):
+        return isinstance(v, list) and len(v) > 0 and all(_fits(x, d[0]) for x in v) if d else isinstance(v, list)
+    return False
+
+
+def cfg_get(bot, key, default):
+    """Maor's override for `key`, or `default` (the bot's own constant) when there is none or it has the wrong type."""
+    v = config(bot)['settings'].get(key)
+    if v is None or not _fits(v, default):
+        return default
+    if isinstance(default, int) and not isinstance(default, bool):
+        return int(v)
+    return tuple(v) if isinstance(default, tuple) else v
+
+
+def paused(bot):
+    """True when Maor paused the bot in AURA. A scheduled run calls this first and exits quietly (no 'start' row)."""
+    if config(bot)['paused']:
+        print('[AURA] paused in AURA: this run is skipped', flush=True)
+        return True
+    return False
+
+
 if __name__ == '__main__':   # python aura_report.py : self-check, no network
     os.environ.pop('SUPABASE_URL', None)
     assert station('news', 'market', 'working') is False, 'without keys it must do nothing'
@@ -256,4 +313,14 @@ if __name__ == '__main__':   # python aura_report.py : self-check, no network
     assert (w['file'], w['line'], w['func']) == ('bot.py', 2, 'boom'), w   # the place in the bot's own code
     _pending.clear()
     _pending.clear()
+    # control: no network -> defaults, not paused; overrides only when the type fits
+    _cfg['t'] = (time.time(), {'paused': False, 'settings': {'N': 2000, 'F': 2500.0, 'S': 'abc', 'L': ['a', 'b'], 'H': [9, 21], 'B': 'x'}})
+    assert cfg_get('t', 'N', 3000) == 2000 and cfg_get('t', 'F', 3000) == 2500 and isinstance(cfg_get('t', 'F', 3000), int)
+    assert cfg_get('t', 'S', 3000) == 3000, 'a string never replaces a number'
+    assert cfg_get('t', 'L', ['z']) == ['a', 'b'] and cfg_get('t', 'H', (8, 22)) == (9, 21)
+    assert cfg_get('t', 'B', True) is True and cfg_get('t', 'missing', 7) == 7
+    _cfg['p'] = (time.time(), {'paused': True, 'settings': {}})
+    assert paused('p') and not paused('t')
+    os.environ['AURA_SUPABASE_URL'] = 'http://127.0.0.1:9'; os.environ['AURA_SUPABASE_KEY'] = 'k'
+    assert config('down') == {'paused': False, 'settings': {}}, 'unreachable -> fail-open'
     print('ok: aura_report')
