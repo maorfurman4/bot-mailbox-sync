@@ -929,9 +929,17 @@ def apply_aura_settings():
     important.DAILY_LIMIT = cfg_get(BOT, "DAILY_LIMIT", important.DAILY_LIMIT)
     WAITING_AFTER_DAYS = cfg_get(BOT, "WAITING_AFTER_DAYS", WAITING_AFTER_DAYS)
 
+def cron_superseded():
+    """AURA's central scheduler starts this bot (AURA_SCHEDULES on): GitHub's own cron run would be a second run of the
+    same slot, so it skips. A dispatch always runs; with AURA unreachable there are no settings and the cron is the backup."""
+    return os.environ.get("GITHUB_EVENT_NAME") == "schedule" and cfg_get(BOT, "AURA_SCHEDULES", False) is True
+
 def main():
     if paused(BOT):
         return  # paused in AURA: no Gmail, no station report
+    if cron_superseded():
+        print("[AURA] AURA starts this bot now: the GitHub cron run skips")
+        return
     apply_aura_settings()
     gmail, calendar = get_google_services()
     modes = [m for m, on in (("DRY RUN — no changes", DRY_RUN), ("ORGANIZE ALL", ORGANIZE_ALL), ("MERGE LABELS", MERGE),

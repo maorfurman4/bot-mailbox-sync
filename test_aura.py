@@ -67,3 +67,23 @@ finally:
     M.get_google_services, aura_report.station, M.station = real_services, real[0], real[1]
 aura({})
 print("ok: aura control")
+
+# AURA's central scheduler: when AURA starts this bot (AURA_SCHEDULES on), GitHub's own cron run is a duplicate and skips;
+# a dispatch (AURA or by hand) always runs; AURA unreachable -> no settings -> the cron is the backup and runs
+def cron_case(event, settings):
+    os.environ["GITHUB_EVENT_NAME"] = event
+    aura_report._cfg["mail"] = (time.time(), {"paused": False, "settings": settings})
+    return M.cron_superseded()
+try:
+    assert cron_case("schedule", {"AURA_SCHEDULES": True}) is True
+    assert cron_case("workflow_dispatch", {"AURA_SCHEDULES": True}) is False
+    assert cron_case("schedule", {}) is False
+    assert cron_case("schedule", {"AURA_SCHEDULES": False}) is False
+    os.environ["GITHUB_EVENT_NAME"] = "schedule"; aura_report._cfg["mail"] = (time.time(), {"paused": False, "settings": {"AURA_SCHEDULES": True}})
+    events.clear(); M.get_google_services = lambda: (_ for _ in ()).throw(AssertionError("ran a superseded cron run"))
+    aura_report.station = M.station = lambda *a, **k: events.append(a)
+    M.main(); assert events == [], events
+finally:
+    os.environ.pop("GITHUB_EVENT_NAME", None); M.get_google_services, aura_report.station, M.station = real_services, real[0], real[1]
+aura({})
+print("ok: aura scheduler guard")
