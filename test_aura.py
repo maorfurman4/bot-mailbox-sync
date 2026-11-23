@@ -87,3 +87,20 @@ finally:
     os.environ.pop("GITHUB_EVENT_NAME", None); M.get_google_services, aura_report.station, M.station = real_services, real[0], real[1]
 aura({})
 print("ok: aura scheduler guard")
+
+# public run logs (the repo is public since 2026-11-23): on GitHub no sender, subject or name reaches the log
+os.environ["GITHUB_ACTIONS"] = "true"
+try:
+    assert M.public("trash: a@b.c | נושא אישי") == "trash: …"
+    assert M.public("unsubscribe news@shop.com") == "unsubscribe …"
+    assert M.public("monday → לוח / קבוצה: רותי") == "monday → לוח / קבוצה: …"
+    assert M.public("failures → telegram") == "failures → telegram"
+    import contextlib as _c, io as _io
+    buf = _io.StringIO()
+    with _c.redirect_stdout(buf):
+        M.act("trash: secret@x.com | שם", lambda: None)
+    assert "secret@x.com" not in buf.getvalue() and "trash" in buf.getvalue(), buf.getvalue()
+finally:
+    os.environ.pop("GITHUB_ACTIONS", None)
+assert M.public("trash: a@b.c | s") == "trash: a@b.c | s"   # locally (Maor's own runs) the full line stays
+print("ok: public logs")
