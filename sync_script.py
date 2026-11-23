@@ -106,9 +106,17 @@ def fail(section: str, ex) -> None:
     detail = re.sub(r"https?://\S+", "<url>", str(ex))[:150]  # כתובת טלגרם מכילה את הטוקן
     FAILURES.append(f"• <b>{html.escape(section)}</b>: {html.escape(detail)}")
 
+def public(line: str) -> str:
+    """The repo and its run logs are public (2026-11-23): on GitHub the personal part of a log line (after ':', or the
+    address after 'unsubscribe') becomes '…'. Run locally, the full line stays."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return line
+    head, sep, _ = line.partition(":")
+    return f"{head}: …" if sep else re.sub(r"^unsubscribe \S+", "unsubscribe …", line)
+
 def act(description: str, fn, *args, **kwargs):
     """כל שינוי במייל/יומן/טלגרם עובר כאן, כדי ש-DRY_RUN באמת לא ישנה כלום."""
-    print(("🧪 [dry] " if DRY_RUN else "▶️ ") + description)
+    print(("🧪 [dry] " if DRY_RUN else "▶️ ") + public(description))
     if not DRY_RUN:
         return fn(*args, **kwargs)
 
@@ -282,7 +290,7 @@ def extract_body(gmail, msg_id, payload, snippet="") -> str:
                         reader = PyPDF2.PdfReader(io.BytesIO(data))
                         body_text += f"\n--- PDF ({name}) ---\n" + "".join(p.extract_text() or "" for p in reader.pages)
                     except Exception as e:
-                        print(f"❌ PDF extraction error for {name}: {e}")
+                        print(public(f"❌ PDF extraction error: {name} {e}"))
             elif "parts" in part:
                 body_text += extract_body(gmail, msg_id, part)
     elif payload.get("body", {}).get("data"):
@@ -388,7 +396,7 @@ def junk(gmail, mail: dict, unsubscribed: set, stats: dict):
             act(f"unsubscribe {mail['sender']}", requests.post, url, data={"List-Unsubscribe": "One-Click"}, timeout=15)
             stats["unsubscribed"] += 1
         except Exception as ex:
-            print(f"⚠️ unsubscribe failed for {mail['sender']}: {ex}")
+            print(public(f"⚠️ unsubscribe failed: {mail['sender']} {ex}"))
     act(f"trash: {mail['sender']} | {mail['subject'][:60]}", gmail.users().messages().trash(userId="me", id=mail["id"]).execute)
     stats["junk"] += 1
 
@@ -429,7 +437,7 @@ def apply_labels(gmail, calendar, mails, stats, unsubscribed, *, move: bool, not
             action = decide(mail["sender"], mail["subject"], categories[mail["id"]])
             if merging:
                 action = merge_action(action, mail["subject"])
-            print(f"📨 {action:9} ← {categories[mail['id']]!s:9} | {mail['sender']} | {mail['subject'][:60]}")
+            print(public(f"📨 {action:9} ← {categories[mail['id']]!s:9}: {mail['sender']} | {mail['subject'][:60]}"))
             try:
                 if action in ("junk", "block"):
                     junk(gmail, mail, unsubscribed, stats)
@@ -911,7 +919,7 @@ def monday_add(board_part: str, group_part: str, name: str, mail_id: str, values
     q = {"rules": [{"column_id": col["הערות"], "compare_value": [mail_id], "operator": "contains_text"}]}
     if monday_gql("query ($ids: [ID!], $q: ItemsQuery) { boards(ids: $ids) { items_page(limit: 1, query_params: $q)"
                   " { items { id } } } }", ids=[board["id"]], q=q)["boards"][0]["items_page"]["items"]:
-        print(f"💤 monday: already there — {name}")
+        print(public(f"💤 monday already there: {name}"))
         return False
     act(f"monday → {board['name']} / {group_part}: {name}", monday_gql,
         "mutation ($board: ID!, $group: String!, $name: String!, $values: JSON!) {"
