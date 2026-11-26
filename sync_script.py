@@ -937,6 +937,20 @@ def apply_aura_settings():
     important.DAILY_LIMIT = cfg_get(BOT, "DAILY_LIMIT", important.DAILY_LIMIT)
     WAITING_AFTER_DAYS = cfg_get(BOT, "WAITING_AFTER_DAYS", WAITING_AFTER_DAYS)
 
+def usd_rate(get=requests.get) -> float:
+    """Today's Bank of Israel representative rate. The fixed 3.7 turned a $100 Claude bill into 370 ₪ (paid: 335 ₪,
+    25.11). No answer or an odd value -> the fallback in rules.py, so a run never stops over it."""
+    try:
+        r = get("https://boi.org.il/PublicApi/GetExchangeRate?key=USD", timeout=10)
+        r.raise_for_status()
+        rate = float(r.json()["currentExchangeRate"])
+        if 2.5 <= rate <= 5.5:
+            return rate
+        print(f"⚠️ USD rate {rate} out of range, using {rules.USD_TO_ILS}")
+    except Exception as e:  # noqa: BLE001
+        print(f"⚠️ USD rate unavailable ({e}), using {rules.USD_TO_ILS}")
+    return rules.USD_TO_ILS
+
 def cron_superseded():
     """AURA's central scheduler starts this bot (AURA_SCHEDULES on): GitHub's own cron run would be a second run of the
     same slot, so it skips. A dispatch always runs; with AURA unreachable there are no settings and the cron is the backup."""
@@ -949,6 +963,7 @@ def main():
         print("[AURA] AURA starts this bot now: the GitHub cron run skips")
         return
     apply_aura_settings()
+    rules.USD_TO_ILS = usd_rate()
     gmail, calendar = get_google_services()
     modes = [m for m, on in (("DRY RUN — no changes", DRY_RUN), ("ORGANIZE ALL", ORGANIZE_ALL), ("MERGE LABELS", MERGE),
                              ("TIDY INBOX", TIDY_INBOX)) if on]

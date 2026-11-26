@@ -275,3 +275,16 @@ assert not m.handle_order(FakeGmail(full), mail)
 m.to_finance, m.extract_body = _tf, _eb
 m.SEEN_ORDERS.clear()
 print("ok")
+
+# 💱 שער דולר: השער היציג של בנק ישראל בכל ריצה; תקלה או ערך מוזר — ברירת המחדל (25.11: $100 של Claude יצא 370 ₪ בשער קבוע 3.7)
+class _R:
+    def __init__(self, body): self.body = body
+    def raise_for_status(self): pass
+    def json(self): return self.body
+assert m.usd_rate(lambda *a, **k: _R({"currentExchangeRate": 3.38})) == 3.38
+assert round(100 * m.usd_rate(lambda *a, **k: _R({"currentExchangeRate": 3.38}))) == 338  # לא 370
+def _down(*a, **k): raise OSError("offline")
+assert m.usd_rate(_down) == m.rules.USD_TO_ILS
+assert m.usd_rate(lambda *a, **k: _R({"currentExchangeRate": 0.0})) == m.rules.USD_TO_ILS
+assert m.usd_rate(lambda *a, **k: _R({})) == m.rules.USD_TO_ILS
+print("✅ USD rate")

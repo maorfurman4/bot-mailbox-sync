@@ -73,7 +73,7 @@ BUSINESS_VENDORS = {
 # קבלה אמיתית — לא "נשארו לך $3", לא "החיוב נכשל", לא "יחויב בעוד שבוע"
 EXPENSE_SUBJECT = r"receipt|invoice|funded|payment|paid|קבלה|חשבונית"
 NOT_EXPENSE_SUBJECT = r"remaining|failed|declined|upcoming|will be charged|trial|reminder|past due"
-USD_TO_ILS = 3.7  # שער קבוע לתקציב; הסכום המקורי בדולרים נשמר גם בהערות
+USD_TO_ILS = 3.4  # ברירת מחדל בלבד: כל ריצה מחליפה בשער היציג של בנק ישראל (sync_script.usd_rate); הסכום בדולרים נשמר בהערות
 
 # 🏠 Splitwise (קבוצת הדירה): מי הוסיף את ההוצאה → למי משלמים
 SPLITWISE_PAYEES = {"Maxim": "מקסים"}
