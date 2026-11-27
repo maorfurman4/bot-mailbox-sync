@@ -573,7 +573,7 @@ def bill_text(body: str) -> str:
 def amount_in_text(amount, text: str) -> bool:
     """הסכום שה-AI החזיר באמת כתוב בחשבונית (גם הפוך — עברית מ-PDF מתהפכת)."""
     a = str(amount or "").replace(",", "").strip()
-    if not re.fullmatch(r"\d+(\.\d+)?", a):
+    if not re.fullmatch(r"\d{1,6}(\.\d+)?", a):  # longer = an invoice/reference number, not a sum
         return False
     nums = [n.replace(",", "") for n in re.findall(r"\d[\d,]*(?:\.\d+)?", text)]
     return any(n in (a, a[::-1]) or float(n) == float(a) for n in nums if re.fullmatch(r"\d+(\.\d+)?", n))
@@ -585,7 +585,8 @@ TOTAL_LABELS = [  # לפי עדיפות: "לתשלום" > "בש"ח / כולל מ
     ('סה"כ בש"ח', 'כולל מע"מ', 'סה"כ ils', "amount paid", "total paid", "grand total", "charged"),
     ('סה"כ', "total"),
 ]
-NUM_RE = re.compile(r"(?<![\d.,])\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?(?![\d%])|(?<![\d.,])\d+(?:\.\d{1,2})?(?![\d%])")
+# up to 6 digits before the point: a longer run is an invoice/customer number, not a sum (26.11 Delta: "7921317335 ₪")
+NUM_RE = re.compile(r"(?<![\d.,])\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?(?![\d%])|(?<![\d.,])\d{1,6}(?:\.\d{1,2})?(?![\d%])")
 DATE_RE = re.compile(r"(?<!\d)(\d{1,2})[./](\d{1,2})[./](20\d\d)(?!\d)")
 
 def _label_at(label: str, line: str) -> int:
@@ -625,7 +626,7 @@ def issue_date(text: str):
     return None
 
 def handle_bill(gmail, calendar, mail: dict) -> bool:
-    """שולח לבוט הקבלות; מחזיר האם שולם (קבלה ששולמה יוצאת מהתיבה)."""
+    """קבלה → בוט הקבלות, חשבון לתשלום → בוט הכספים; מחזיר האם שולם (קבלה ששולמה יוצאת מהתיבה)."""
     full = gmail.users().messages().get(userId="me", id=mail["id"], format="full").execute()
     body = extract_body(gmail, mail["id"], full["payload"], mail["snippet"])
     if _matches(mail["sender"], ["splitwise.com"]):  # חשבונות הדירה — כללים, לא ה-AI הכללי (שם יצא "לא צוין — 135")
@@ -644,36 +645,47 @@ def handle_bill(gmail, calendar, mail: dict) -> bool:
         bill["billing_period"] = f"{issued:%d/%m/%Y}"
     due = parse_due(bill.get("due_date"))
 
-    text = (f"{'✅' if is_paid else '💳'} <b>{'קבלה' if is_paid else 'חשבון לתשלום'}</b>\n\n"
-            f"🏪 <b>ספק:</b> {html.escape(str(merchant))}\n💰 <b>סכום:</b> {html.escape(f'{amount} {currency}')}\n"
-            f"📅 <b>תקופה/תאריך:</b> {html.escape(str(bill.get('billing_period', 'לא צוין')))}")
-    if not is_paid and due:
-        text += f"\n⏰ <b>לתשלום עד:</b> {datetime.fromisoformat(due):%d/%m/%Y}"
-    buttons = []
-    if not is_paid and safe_pay_link(bill.get("payment_link"), mail["sender"], body):
-        buttons.append({"text": "💳 לתשלום (באתר של הספק)", "url": bill["payment_link"]})
-    buttons.append({"text": "📧 פתח את המייל", "url": gmail_link(mail["id"])})
-    act(f"receipt → telegram: {merchant} {amount}", telegram, TELEGRAM_TOKEN_RECEIPTS, CHAT_ID_RECEIPTS, text, buttons)
-    SENT["receipts"] += 1
-    for name, data in pdf_attachments(gmail, mail["id"], full["payload"]):
-        act(f"pdf → telegram: {name}", telegram_file, TELEGRAM_TOKEN_RECEIPTS, CHAT_ID_RECEIPTS, name, data)
+    pay_link = bill["payment_link"] if not is_paid and safe_pay_link(bill.get("payment_link"), mail["sender"], body) else None
+    if not is_paid and FINANCE_BOT_TOKEN:  # 27.11, Maor: a bill to pay is the finance bot's job, not the receipts bot's
+        finance_post("bill due → finance bot", {
+            "kind": "bill_due", "vendor": str(merchant), "amount": amount if amount_in_text(amount, amount) else None,
+            "currency": currency if currency in ("₪", "$", "€") else "₪", "due": due, "pay_link": pay_link,
+            "link": gmail_link(mail["id"])})
+    else:
+        send_receipt(gmail, mail, full, bill, is_paid, merchant, amount, currency, due, pay_link)
     # קבלה ששולמה → בוט הכספים (הצעה ✅/✖️). הוצאת עסק — כבר נשלחה ב-handle_expense
     if is_paid and found and not business_vendor(mail["sender"], mail["subject"]):
         ils = round(found[0] * rules.USD_TO_ILS, 2) if found[1] == "$" else found[0]
         to_finance(vendor_label(mail["sender"], str(merchant)), ils, issued or mail_date(full), False, mail["id"])
-
     if not is_paid and due:  # חשבון פתוח → יומן ביום האחרון לתשלום (דבי מציג אותו בתדריך)
         exists = calendar.events().list(calendarId="primary", privateExtendedProperty=f"mailbot={mail['id']}").execute()
         if not exists.get("items"):
             end = (datetime.fromisoformat(due) + timedelta(days=1)).strftime("%Y-%m-%d")
             act(f"calendar bill {due}", calendar.events().insert(calendarId="primary", body={
-                "summary": f"💳 לשלם {merchant} — {amount} {currency}",
+                "summary": f"💳 לשלם {merchant}" + (f" — {amount} {currency}" if amount_in_text(amount, amount) else ""),
                 "description": gmail_link(mail["id"]),
                 "start": {"date": due}, "end": {"date": end},
                 "extendedProperties": {"private": {"mailbot": mail["id"]}},
             }).execute)
             SENT["calendar"] += 1
     return is_paid
+
+def send_receipt(gmail, mail, full, bill, is_paid, merchant, amount, currency, due, pay_link) -> None:
+    """→ בוט הקבלות: הכרטיס וה-PDF (קבלה; חשבון פתוח רק כשאין בוט כספים)."""
+    shown = f"{amount} {currency}" if amount_in_text(amount, amount) else "לא צוין"
+    text = (f"{'✅' if is_paid else '💳'} <b>{'קבלה' if is_paid else 'חשבון לתשלום'}</b>\n\n"
+            f"🏪 <b>ספק:</b> {html.escape(str(merchant))}\n💰 <b>סכום:</b> {html.escape(shown)}\n"
+            f"📅 <b>תקופה/תאריך:</b> {html.escape(str(bill.get('billing_period', 'לא צוין')))}")
+    if not is_paid and due:
+        text += f"\n⏰ <b>לתשלום עד:</b> {datetime.fromisoformat(due):%d/%m/%Y}"
+    buttons = []
+    if pay_link:
+        buttons.append({"text": "💳 לתשלום (באתר של הספק)", "url": pay_link})
+    buttons.append({"text": "📧 פתח את המייל", "url": gmail_link(mail["id"])})
+    act(f"receipt → telegram: {merchant} {amount}", telegram, TELEGRAM_TOKEN_RECEIPTS, CHAT_ID_RECEIPTS, text, buttons)
+    SENT["receipts"] += 1
+    for name, data in pdf_attachments(gmail, mail["id"], full["payload"]):
+        act(f"pdf → telegram: {name}", telegram_file, TELEGRAM_TOKEN_RECEIPTS, CHAT_ID_RECEIPTS, name, data)
 
 # =============================================================================
 # ─── 💸 כסף → monday: חשבונות הדירה (Splitwise) והוצאות עסק ────────────────────

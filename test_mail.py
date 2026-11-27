@@ -288,3 +288,41 @@ assert m.usd_rate(_down) == m.rules.USD_TO_ILS
 assert m.usd_rate(lambda *a, **k: _R({"currentExchangeRate": 0.0})) == m.rules.USD_TO_ILS
 assert m.usd_rate(lambda *a, **k: _R({})) == m.rules.USD_TO_ILS
 print("✅ USD rate")
+
+# ── 27.11: a long run of digits is an invoice number, not a sum (Delta: "7921317335 ₪") ──
+assert m.total_amount('סה"כ לתשלום 7921317335') is None
+assert m.total_amount('חשבונית 7921317335\nסה"כ לתשלום 89.90') == (89.9, "₪")
+assert not m.amount_in_text("7921317335", "מספר לקוח 7921317335") and m.amount_in_text("123456", "123456")
+
+# ── 27.11: a bill to pay → the finance bot (kind bill_due), not the receipts bot; a receipt stays with the receipts bot ──
+class _G:  # gmail stub: users().messages().get(...).execute()
+    def __getattr__(self, _):
+        return lambda *a, **k: self
+    def execute(self):
+        return {"payload": {}, "internalDate": "0", "items": []}
+_saved = {k: getattr(m, k) for k in ("extract_body", "ask_ai", "finance_post", "send_receipt", "FINANCE_BOT_TOKEN", "act")}
+_posts, _receipts = [], []
+m.extract_body = lambda *a: "חשבון מקסים אינסטלטור\nסה\"כ לתשלום 450"
+m.finance_post = lambda what, p: _posts.append(p)
+m.send_receipt = lambda *a: _receipts.append(a)
+m.act = lambda *a, **k: None
+m.FINANCE_BOT_TOKEN = "x"
+_mail = {"id": "abc", "sender": "maxim@example.com", "snippet": "", "subject": "חשבון"}
+m.ask_ai = lambda prompt: {"merchant": "מקסים", "amount": "450", "currency": "₪", "is_paid": False, "due_date": "lo"}
+assert m.handle_bill(_G(), _G(), _mail) is False and not _receipts
+assert _posts[-1]["kind"] == "bill_due" and _posts[-1]["amount"] == "450" and _posts[-1]["vendor"] == "מקסים"
+m.ask_ai = lambda prompt: {"merchant": "רותי", "amount": "לא צוין", "currency": "לא צוין", "is_paid": False}
+m.extract_body = lambda *a: "חשבון לנובמבר"
+m.handle_bill(_G(), _G(), _mail)
+assert _posts[-1]["amount"] is None and _posts[-1]["currency"] == "₪"
+m.ask_ai = lambda prompt: {"merchant": "דלתא", "amount": "120", "currency": "₪", "is_paid": True}
+m.extract_body = lambda *a: "קבלה\nסה\"כ לתשלום 120"
+_n = len(_posts)
+assert m.handle_bill(_G(), _G(), {**_mail, "sender": "x@delta.co.il"}) is True and len(_receipts) == 1
+m.FINANCE_BOT_TOKEN = ""  # no finance bot → an open bill still reaches the receipts bot
+m.ask_ai = lambda prompt: {"merchant": "מקסים", "amount": "450", "is_paid": False}
+m.handle_bill(_G(), _G(), _mail)
+assert len(_receipts) == 2
+for k, v in _saved.items():
+    setattr(m, k, v)
+print("bills ok")
